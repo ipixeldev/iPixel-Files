@@ -8,11 +8,13 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 0.9 makes **iPixel Blue** the primary design and rebuilds the full interface: animated folder-stack splash/loading states, stable dashboard hero, location cards, separated tool/file cards, corrected iOS 26 search glass, improved credits, independent System/Light/Dark modes and original pixel-art app icons.
+Version 1.0 adds the optional **iPixel Pixel** interface, pixel-style typography, a dedicated file-sorting control, theme-aware folder animations and an automatic yellow/lime alternate app icon. Version 0.9 introduced the full iPixel interface rebuild.
 
 ## iPixel-Files highlights
 
-- Complete **iPixel Blue** and **iPixel Lime** visual systems.
+- Complete **iPixel Blue**, **iPixel Lime** and optional **iPixel Pixel** visual systems.
+- Automatic blue or yellow/lime app icon and matching animated folder stacks.
+- File sorting by default order, name, date, type or size in either direction.
 - System, Light and Dark appearance modes.
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.

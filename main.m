@@ -525,6 +525,7 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     BOOL _selectingBackups;
     NSMutableSet<NSString *> *_selectedBackups;
     UIBarButtonItem *_selectItem;
+    UIBarButtonItem *_sortItem;
     UIBarButtonItem *_menuItem;
     UIBarButtonItem *_doneItem;
     UIBarButtonItem *_deleteItem;
@@ -566,15 +567,18 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     [super viewDidLoad];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    _sortItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down.circle"]
+                                                 menu:[self sortMenu]];
+    _sortItem.accessibilityLabel = @"Sort files";
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                  menu:[self browserMenu]];
     if (_backupStorage) {
         _selectItem = [[UIBarButtonItem alloc] initWithTitle:@"Select" style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(enterBackupSelection)];
         _selectItem.enabled = NO;
-        self.navigationItem.rightBarButtonItems = @[_selectItem, _menuItem];
+        self.navigationItem.rightBarButtonItems = @[_selectItem, _sortItem, _menuItem];
     } else {
-        self.navigationItem.rightBarButtonItem = _menuItem;
+        self.navigationItem.rightBarButtonItems = @[_sortItem, _menuItem];
     }
     [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -590,10 +594,9 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     [self reload];
 }
 
-- (UIMenu *)browserMenu
+- (UIMenu *)sortMenu
 {
     __weak typeof(self) weakSelf = self;
-    NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
     NSArray *titles = @[@"Default", @"Name", @"Date", @"Type", @"Size"];
     NSArray *symbols = @[@"line.3.horizontal.decrease", @"textformat", @"calendar", @"doc.on.doc", @"internaldrive"];
     NSMutableArray<UIAction *> *sortActions = [NSMutableArray new];
@@ -606,7 +609,7 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
             if (!self) return;
             self->_sortKey = (WQFolderSortKey)value;
             [self applySortAndFilter];
-            self->_menuItem.menu = [self browserMenu];
+            self->_sortItem.menu = [self sortMenu];
         }];
         action.state = _sortKey == value ? UIMenuElementStateOn : UIMenuElementStateOff;
         [sortActions addObject:action];
@@ -618,14 +621,22 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
         if (!self) return;
         self->_sortAscending = !self->_sortAscending;
         [self applySortAndFilter];
-        self->_menuItem.menu = [self browserMenu];
+        self->_sortItem.menu = [self sortMenu];
     }];
-    UIMenu *sort = [UIMenu menuWithTitle:@"Sort by"
-                                   image:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
-                              identifier:nil
-                                 options:UIMenuOptionsSingleSelection
-                                children:[sortActions arrayByAddingObject:direction]];
-    [items addObject:sort];
+    UIMenu *choices = [UIMenu menuWithTitle:@""
+                                      image:nil
+                                 identifier:nil
+                                    options:UIMenuOptionsDisplayInline | UIMenuOptionsSingleSelection
+                                   children:sortActions];
+    UIMenu *directionGroup = [UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                            options:UIMenuOptionsDisplayInline children:@[direction]];
+    return [UIMenu menuWithTitle:@"Sort by" children:@[choices, directionGroup]];
+}
+
+- (UIMenu *)browserMenu
+{
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
     if (!self.readOnly && !_backupStorage) {
         [items addObject:[UIAction actionWithTitle:@"New Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf promptNewFolder]; }]];
@@ -878,8 +889,8 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     self.tableView.allowsMultipleSelection = NO;
     self.refreshControl.enabled = YES;
     self.title = _baseTitle;
-    self.navigationItem.rightBarButtonItems = _backupStorage ? @[_selectItem, _menuItem] : nil;
-    if (!_backupStorage) self.navigationItem.rightBarButtonItem = _menuItem;
+    self.navigationItem.rightBarButtonItems = _backupStorage
+        ? @[_selectItem, _sortItem, _menuItem] : @[_sortItem, _menuItem];
     [self.tableView reloadData];
     [self updateBackupSelectionAvailability];
 }
@@ -1711,6 +1722,18 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 #pragma mark - Root
 
+static void ip_sync_alternate_icon(void)
+{
+    UIApplication *application = UIApplication.sharedApplication;
+    if (!application.supportsAlternateIcons) return;
+    NSString *wanted = IPSelectedTheme() == IPThemeStyleLime ? @"LimeIcon" : nil;
+    NSString *current = application.alternateIconName;
+    if ((wanted == nil && current == nil) || [wanted isEqualToString:current]) return;
+    [application setAlternateIconName:wanted completionHandler:^(NSError *error) {
+        if (error) NSLog(@"Could not update themed app icon: %@", error.localizedDescription);
+    }];
+}
+
 @interface IPAppearanceSettingsViewController : UITableViewController
 @end
 
@@ -1790,6 +1813,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     else
         [NSUserDefaults.standardUserDefaults setInteger:indexPath.row forKey:IPAppearanceModeDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
+    ip_sync_alternate_icon();
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:IPThemeDidChangeNotification object:nil];
     });
@@ -1865,7 +1889,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 {
     UILabel *label = [UILabel new];
     label.text = text;
-    label.font = [UIFont preferredFontForTextStyle:style];
+    label.font = IPTextFont(style);
     label.adjustsFontForContentSizeCategory = YES;
     label.textColor = color;
     label.numberOfLines = 0;
@@ -2049,7 +2073,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     title.textColor = IPPrimaryText();
     UILabel *developer = [UILabel new];
     developer.text = @"Designed & developed by iPixelDev";
-    developer.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    developer.font = IPTextFont(UIFontTextStyleFootnote);
     developer.textColor = IPSecondaryText();
     UIStackView *identityText = [[UIStackView alloc] initWithArrangedSubviews:@[title, developer]];
     identityText.axis = UILayoutConstraintAxisVertical;
@@ -2081,7 +2105,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     credit.text = @"Based on WQFiles by kolbicz\nworse_query by Taj C · enumeration inspired by KAMUI\nGPL-3.0-or-later";
     credit.numberOfLines = 0;
     credit.textAlignment = NSTextAlignmentCenter;
-    credit.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    credit.font = IPTextFont(UIFontTextStyleCaption1);
     credit.textColor = IPSecondaryText();
 
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[identity, links, credit]];
@@ -2151,7 +2175,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
             @"Recover overwritten and deleted files", @"Activity, access & diagnostics"];
         c.secondaryText = details[(NSUInteger)indexPath.row];
     }
-    c.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    c.textProperties.font = IPTextFont(UIFontTextStyleHeadline);
     c.textProperties.color = IPPrimaryText();
     c.secondaryTextProperties.color = IPSecondaryText();
     c.secondaryTextProperties.numberOfLines = 0;
@@ -2279,6 +2303,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (void)installRootAnimated:(BOOL)animated
 {
     IPInstallAppearance();
+    ip_sync_alternate_icon();
     self.window.overrideUserInterfaceStyle = IPPreferredInterfaceStyle();
     self.window.tintColor = IPAccent();
     UIViewController *root = [[WQNavigationController alloc] initWithRootViewController:[WQRootViewController new]];

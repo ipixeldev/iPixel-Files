@@ -90,17 +90,30 @@ UIView *wq_folder_stack_view(CGSize size, BOOL animated)
         [container.widthAnchor constraintEqualToConstant:size.width],
         [container.heightAnchor constraintEqualToConstant:size.height],
     ]];
-    NSArray<UIColor *> *colors = @[
-        IPDynamicColor(0xB9DBFF, 0x8CC5FF), IPDynamicColor(0x1685F8, 0x2A91FF),
-        IPDynamicColor(0x0A55AF, 0x176AC5), IPDynamicColor(0x041D3D, 0x082C55),
-    ];
+    NSArray<UIColor *> *colors;
+    if (IPSelectedTheme() == IPThemeStyleLime) {
+        colors = @[
+            IPDynamicColor(0xFFF8A8, 0xFFF59D), IPDynamicColor(0xE8FF55, 0xD8F238),
+            IPDynamicColor(0xA8D900, 0xB8E61B), IPDynamicColor(0x526900, 0x718D00),
+        ];
+    } else if (IPPixelUIEnabled()) {
+        colors = @[
+            IPDynamicColor(0xDDE2FF, 0x90F0FF), IPDynamicColor(0x8D80FF, 0x35D6FF),
+            IPDynamicColor(0x5B4BFF, 0x7667FF), IPDynamicColor(0x211B65, 0x25306E),
+        ];
+    } else {
+        colors = @[
+            IPDynamicColor(0xB9DBFF, 0x8CC5FF), IPDynamicColor(0x1685F8, 0x2A91FF),
+            IPDynamicColor(0x0A55AF, 0x176AC5), IPDynamicColor(0x041D3D, 0x082C55),
+        ];
+    }
     CGFloat layerHeight = size.height * 0.46;
     for (NSUInteger i = 0; i < colors.count; i++) {
         WQFolderLayerView *folder = [[WQFolderLayerView alloc] initWithFrame:
             CGRectMake(size.width * 0.06, size.height * (0.04 + i * 0.16), size.width * 0.88, layerHeight)];
         folder.backgroundColor = UIColor.clearColor;
         folder.fillColor = colors[i];
-        folder.layer.shadowColor = IPColor(0x00152E).CGColor;
+        folder.layer.shadowColor = (IPSelectedTheme() == IPThemeStyleLime ? IPColor(0x3B4700) : IPColor(0x00152E)).CGColor;
         folder.layer.shadowOpacity = i == colors.count - 1 ? 0.22 : 0.10;
         folder.layer.shadowRadius = 8;
         folder.layer.shadowOffset = CGSizeMake(0, 5);
@@ -166,7 +179,7 @@ UIView *wq_device_header(CGFloat width)
         _loadingTitle.font = IPFont(20, UIFontWeightBold);
         _loadingTitle.textColor = IPPrimaryText();
         _loadingStatus = [UILabel new];
-        _loadingStatus.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _loadingStatus.font = IPTextFont(UIFontTextStyleFootnote);
         _loadingStatus.textColor = IPSecondaryText();
         _loadingStatus.numberOfLines = 2;
         _loadingProgress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];

@@ -148,6 +148,23 @@ static inline UIFont *IPFont(CGFloat size, UIFontWeight weight) {
     return rounded ? [UIFont fontWithDescriptor:rounded size:size] : font;
 }
 
+static inline UIFont *IPTextFont(UIFontTextStyle style) {
+    if (!IPPixelUIEnabled()) return [UIFont preferredFontForTextStyle:style];
+    CGFloat size = 17;
+    UIFontWeight weight = UIFontWeightRegular;
+    if ([style isEqualToString:UIFontTextStyleLargeTitle]) { size = 32; weight = UIFontWeightBold; }
+    else if ([style isEqualToString:UIFontTextStyleTitle1]) { size = 27; weight = UIFontWeightBold; }
+    else if ([style isEqualToString:UIFontTextStyleTitle2]) { size = 21; weight = UIFontWeightBold; }
+    else if ([style isEqualToString:UIFontTextStyleTitle3]) { size = 19; weight = UIFontWeightSemibold; }
+    else if ([style isEqualToString:UIFontTextStyleHeadline]) { size = 16; weight = UIFontWeightBold; }
+    else if ([style isEqualToString:UIFontTextStyleCallout]) size = 15;
+    else if ([style isEqualToString:UIFontTextStyleSubheadline]) size = 14;
+    else if ([style isEqualToString:UIFontTextStyleFootnote]) size = 12;
+    else if ([style isEqualToString:UIFontTextStyleCaption1]) size = 11;
+    else if ([style isEqualToString:UIFontTextStyleCaption2]) size = 10;
+    return [[UIFontMetrics metricsForTextStyle:style] scaledFontForFont:IPFont(size, weight)];
+}
+
 static inline void IPStyleCell(UITableViewCell *cell) {
     if (IPPixelUIEnabled() && [cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = (UIListContentConfiguration *)cell.contentConfiguration;

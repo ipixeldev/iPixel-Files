@@ -275,10 +275,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         _iconView.layer.cornerCurve = kCACornerCurveContinuous;
         _iconView.clipsToBounds = YES;
         _nameLabel = [UILabel new];
-        _nameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        _nameLabel.font = IPTextFont(UIFontTextStyleBody);
         _nameLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _detailLabel = [UILabel new];
-        _detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _detailLabel.font = IPTextFont(UIFontTextStyleFootnote);
         _detailLabel.textColor = IPSecondaryText();
         _detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _sizeLabel = [UILabel new];
@@ -332,7 +332,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
         self.selectionStyle = UITableViewCellSelectionStyleNone;
         _captionLabel = [UILabel new];
-        _captionLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        _captionLabel.font = IPTextFont(UIFontTextStyleSubheadline);
         _captionLabel.textColor = IPSecondaryText();
         _totalLabel = [UILabel new];
         _totalLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleLargeTitle]
@@ -341,7 +341,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
         _bar.progressTintColor = IPAccent();
         _statusLabel = [UILabel new];
-        _statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        _statusLabel.font = IPTextFont(UIFontTextStyleFootnote);
         _statusLabel.textColor = IPSecondaryText();
         _statusLabel.numberOfLines = 0;
         _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
