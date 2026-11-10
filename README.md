@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.1 completes the **iPixel Pixel** interface with a bundled pixel font, code-drawn pixel icons and stepped pixel animations. It also adds a dual browser and a safe transfer shelf for copying files or folders between accessible app containers. Version 1.0 added sorting, theme-aware animation colors and the yellow/lime alternate icon.
+Version 1.2 fixes container access for sideloading services that provide multiple generated App Groups. It tests every entitled group and verifies that a directory can really be enumerated before accepting its sandbox token. Version 1.1 completed the **iPixel Pixel** interface and added the dual browser and transfer shelf.
 
 ## iPixel-Files highlights
 

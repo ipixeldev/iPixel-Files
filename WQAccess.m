@@ -80,32 +80,44 @@ typedef struct __SecTask *SecTaskRef;
 extern SecTaskRef SecTaskCreateFromSelf(CFAllocatorRef allocator);
 extern CFTypeRef SecTaskCopyValueForEntitlement(SecTaskRef task, CFStringRef entitlement, CFErrorRef *error);
 
-NSString *wq_app_group(void)
+static NSArray<NSString *> *wq_app_groups(void)
 {
-    static NSString *group;
+    static NSArray<NSString *> *groups;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSArray *groups = nil;
+        NSArray *entitled = nil;
         SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
         if (task) {
             CFTypeRef value = SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.security.application-groups"), NULL);
-            if (value) groups = (__bridge_transfer NSArray *)value;
+            if (value) entitled = (__bridge_transfer NSArray *)value;
             CFRelease(task);
         }
-        for (id candidate in groups) {
+        NSMutableArray<NSString *> *usable = [NSMutableArray new];
+        for (id candidate in entitled) {
             if (![candidate isKindOfClass:NSString.class]) continue;
             NSURL *root = [NSFileManager.defaultManager containerURLForSecurityApplicationGroupIdentifier:candidate];
-            if (root) {
-                group = candidate;
-                if (!WQRecoverCacheSwapAtPath([root.path stringByAppendingPathComponent:@"Library"]))
-                    wq_log(@"App-group cache recovery requires attention; preserved contents retained: %@ (%@)", root.path, wq_errno(errno));
-                break;
-            }
+            if (!root) continue;
+            [usable addObject:candidate];
+            if (!WQRecoverCacheSwapAtPath([root.path stringByAppendingPathComponent:@"Library"]))
+                wq_log(@"App-group cache recovery requires attention; preserved contents retained: %@ (%@)", root.path, wq_errno(errno));
         }
-        wq_log(@"App group: %@ (entitled: %@)", group ?: @"NONE",
-               groups.count ? [groups componentsJoinedByString:@", "] : @"none");
+        groups = usable.copy;
+        wq_log(@"App groups available for token query: %@ (entitled: %@)",
+               groups.count ? [groups componentsJoinedByString:@", "] : @"NONE",
+               entitled.count ? [entitled componentsJoinedByString:@", "] : @"none");
     });
-    return group;
+    return groups;
+}
+
+static NSString *gWorkingAppGroup;
+
+NSString *wq_app_group(void)
+{
+    NSArray<NSString *> *groups = wq_app_groups();
+    // The first usable group remains the app's stable storage location. Token
+    // acquisition may select a different generated group internally, but that
+    // must not move Backups or other app data midway through a process.
+    return groups.firstObject;
 }
 
 #pragma mark - worse_query
@@ -123,6 +135,7 @@ typedef const char *(*co_get_path_fn)(void *);
 typedef const char *(*co_get_id_fn)(void *);
 
 static void wq_release_handle(int64_t handle);
+static BOOL wq_grant_opens(NSString *path);
 
 static int64_t wq_query_token(NSString *group, BOOL altFlags)
 {
@@ -176,10 +189,8 @@ BOOL wq_system_areas_reachable(void)
     return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27;
 }
 
-static int64_t wq_query(NSString *target, BOOL altFlags)
+static int64_t wq_query_group(NSString *group, NSString *target, BOOL altFlags)
 {
-    NSString *group = wq_app_group();
-    if (!group) return -1;
     NSFileManager *files = NSFileManager.defaultManager;
     NSURL *root = [files containerURLForSecurityApplicationGroupIdentifier:group];
     if (!root) return -1;
@@ -214,6 +225,55 @@ static int64_t wq_query(NSString *target, BOOL altFlags)
     return handle;
 }
 
+// Sideloading services frequently replace one requested App Group with several
+// generated groups. Their entitlement order is not meaningful, and only one
+// may produce a sandbox extension that actually covers the requested target.
+// Verify every candidate and remember the one that works.
+static int64_t wq_query(NSString *target, BOOL altFlags)
+{
+    NSArray<NSString *> *groups = wq_app_groups();
+    if (!groups.count) return -1;
+    NSString *preferred = nil;
+    @synchronized (groups) { preferred = gWorkingAppGroup; }
+    NSMutableArray<NSString *> *ordered = groups.mutableCopy;
+    if (preferred && [ordered containsObject:preferred]) {
+        [ordered removeObject:preferred];
+        [ordered insertObject:preferred atIndex:0];
+    }
+    NSMutableArray<NSString *> *failures = [NSMutableArray new];
+    int64_t lastFailure = -5;
+    for (NSString *group in ordered) {
+        int64_t handle = wq_query_group(group, target, altFlags);
+        if (handle >= 0 && wq_grant_opens(target)) {
+            @synchronized (groups) {
+                if (![gWorkingAppGroup isEqualToString:group]) {
+                    gWorkingAppGroup = group;
+                    wq_log(@"grant: selected working App Group %@", group);
+                }
+            }
+            return handle;
+        }
+        if (handle >= 0) {
+            wq_release_handle(handle);
+            handle = -8;
+        }
+        lastFailure = handle;
+        [failures addObject:[NSString stringWithFormat:@"%@=%lld", group, (long long)handle]];
+    }
+    static NSMutableSet<NSString *> *reported;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ reported = [NSMutableSet new]; });
+    NSString *kind = altFlags ? @"alternative" : @"standard";
+    @synchronized (reported) {
+        if (![reported containsObject:kind]) {
+            [reported addObject:kind];
+            wq_log(@"grant: no entitled App Group produced a working %@ token (%@)", kind,
+                   [failures componentsJoinedByString:@", "]);
+        }
+    }
+    return lastFailure;
+}
+
 static NSMutableDictionary<NSString *, NSNumber *> *gGrants;
 static NSMutableArray<NSString *> *gGrantOrder;   // oldest first
 // The kernel limits how many sandbox extensions a process may hold. Keep a
@@ -237,18 +297,43 @@ static NSString *wq_norm(NSString *path)
     return p;
 }
 
-// Whether the target can now be opened. Only a sandbox denial (EPERM) counts
-// as "the token didn't help": EACCES is ordinary file permissions (root-owned
-// system containers), which a token never changes.
+static BOOL wq_is_container_uuid(NSString *name)
+{
+    return name.length == 36 && [[NSUUID alloc] initWithUUIDString:name] != nil;
+}
+
+// Whether the target can now actually be used. A container directory can be
+// opened on some iOS builds while readdir and every child remain sandbox
+// denied, so open(2) alone is a false-positive token check. Only a sandbox
+// denial (EPERM) counts as "the token didn't help": EACCES is ordinary file
+// permissions (root-owned system containers), which a token never changes.
 static BOOL wq_grant_opens(NSString *path)
 {
     int fd = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-    if (fd >= 0) { close(fd); return YES; }
+    if (fd >= 0) {
+        struct stat st;
+        if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
+            DIR *dir = fdopendir(fd); // owns fd on success
+            if (!dir) {
+                int err = errno;
+                close(fd);
+                return err != EPERM;
+            }
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            int err = errno;
+            closedir(dir);
+            return entry != NULL || err != EPERM;
+        }
+        close(fd);
+        return YES;
+    }
     return errno != EPERM;
 }
 
 BOOL wq_grant(NSString *path)
 {
+    static BOOL containerTokenProbeFailed;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         gGrants = [NSMutableDictionary new];
@@ -257,6 +342,12 @@ BOOL wq_grant(NSString *path)
     });
     NSString *key = wq_norm(path);
     [gGrantLock lock];
+    BOOL isContainerProbe = wq_is_container_uuid(key.lastPathComponent) &&
+        ([key containsString:@"/Containers/Data/"] || [key containsString:@"/Containers/Shared/"]);
+    if (isContainerProbe && containerTokenProbeFailed) {
+        [gGrantLock unlock];
+        return NO;
+    }
     NSNumber *known = gGrants[key];
     if (known) {
         [gGrantOrder removeObject:key];   // most recently used goes last
@@ -313,6 +404,9 @@ BOOL wq_grant(NSString *path)
     if (handle >= 0) {  // failures are retried next time
         gGrants[key] = @(handle);
         [gGrantOrder addObject:key];
+    } else if (isContainerProbe) {
+        containerTokenProbeFailed = YES;
+        wq_log(@"grant: container access is unavailable with every entitled App Group and query mode; skipping repeated token attempts until relaunch");
     }
     [gGrantLock unlock];
     return handle >= 0;
