@@ -9,6 +9,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import <AVKit/AVKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
@@ -24,6 +25,8 @@
 #import "WQPlistEditor.h"
 #import "WQPlistEditorSupport.h"
 #import "WQHexViewer.h"
+#import "WQArchive.h"
+#import "WQDatabase.h"
 
 static BOOL wq_looks_like_uuid(NSString *name)
 {
@@ -96,7 +99,9 @@ static void wq_set_location_starred(NSString *path, NSString *name, BOOL starred
 
 #pragma mark - File viewer
 
-typedef NS_ENUM(NSInteger, WQOpenMode) { WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex };
+typedef NS_ENUM(NSInteger, WQOpenMode) {
+    WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex, WQOpenMedia, WQOpenArchive, WQOpenDatabase
+};
 // Opens a file in the fitting viewer (Auto: chosen from its first bytes).
 static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readOnly, WQOpenMode mode);
 
@@ -207,8 +212,16 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     UIMenu *openAs = [UIMenu menuWithTitle:@"Open As" children:@[
         [UIAction actionWithTitle:@"Plist Editor" image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenPlist]; }],
+        [UIAction actionWithTitle:@"Text / Image" image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenText]; }],
         [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenHex]; }],
+        [UIAction actionWithTitle:@"Media Player" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenMedia]; }],
+        [UIAction actionWithTitle:@"Archive" image:[UIImage systemImageNamed:@"archivebox"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenArchive]; }],
+        [UIAction actionWithTitle:@"SQLite Database" image:[UIImage systemImageNamed:@"cylinder"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenDatabase]; }],
     ]];
     UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:openAs];
     self.navigationItem.rightBarButtonItems = @[share, more];
@@ -451,15 +464,159 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 
 @end
 
+#pragma mark - Media and archives
+
+@interface WQMediaViewController : AVPlayerViewController
+- (instancetype)initWithPath:(NSString *)path;
+@end
+
+@implementation WQMediaViewController {
+    NSString *_path;
+}
+
+- (instancetype)initWithPath:(NSString *)path
+{
+    if ((self = [super init])) { _path = path.copy; self.title = path.lastPathComponent; }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+    (void)wq_grant(_path.stringByDeletingLastPathComponent);
+    (void)wq_grant(_path);
+    self.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:_path]];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self action:@selector(shareMedia)];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    [self.player play];
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    [self.player pause];
+}
+
+- (void)shareMedia { wq_share(self, _path, nil); }
+@end
+
+@interface WQArchiveViewController : UITableViewController
+- (instancetype)initWithPath:(NSString *)path;
+@end
+
+@implementation WQArchiveViewController {
+    NSString *_path;
+    NSArray<NSDictionary<NSString *, id> *> *_entries;
+    NSString *_error;
+    BOOL _loading;
+}
+
+- (instancetype)initWithPath:(NSString *)path
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) { _path = path.copy; self.title = path.lastPathComponent; }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.tableView.backgroundColor = IPBackground();
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Extract"
+        style:UIBarButtonItemStyleProminent target:self action:@selector(extractArchive)];
+    _loading = YES;
+    NSString *path = _path;
+    dispatch_async(wq_io(), ^{
+        NSString *error = nil;
+        NSArray *entries = WQArchiveList(path, &error);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_loading = NO; self->_entries = entries; self->_error = error;
+            self.navigationItem.rightBarButtonItem.enabled = entries != nil;
+            [self.tableView reloadData];
+        });
+    });
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return MAX((NSInteger)1, (NSInteger)_entries.count);
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"archive"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"archive"];
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    if (_loading || !_entries.count) {
+        content.text = _loading ? @"Reading archive…" : (_error ? @"Cannot open archive" : @"Archive is empty");
+        content.secondaryText = _error;
+        content.image = [UIImage systemImageNamed:_error ? @"exclamationmark.triangle" : @"archivebox"];
+    } else {
+        NSDictionary *entry = _entries[(NSUInteger)indexPath.row];
+        BOOL directory = [entry[@"directory"] boolValue];
+        content.text = entry[@"name"];
+        content.secondaryText = directory ? @"Folder" : wq_size_text([entry[@"size"] unsignedLongLongValue]);
+        content.image = [UIImage systemImageNamed:directory ? @"folder.fill" : @"doc"];
+    }
+    content.textProperties.color = IPPrimaryText();
+    content.secondaryTextProperties.color = IPSecondaryText();
+    content.imageProperties.tintColor = IPAccent();
+    content.secondaryTextProperties.numberOfLines = 0;
+    cell.contentConfiguration = content;
+    IPStyleCell(cell);
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    return cell;
+}
+
+- (void)extractArchive
+{
+    NSString *base = _path.lastPathComponent.stringByDeletingPathExtension;
+    NSString *destination = [_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:
+        [base stringByAppendingString:@" Extracted"]];
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Extract archive?"
+        message:[NSString stringWithFormat:@"Files will be extracted safely into %@. Links, traversal paths and oversized entries are refused.", destination.lastPathComponent]
+        preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Extract" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused action) {
+        self.navigationItem.rightBarButtonItem.enabled = NO;
+        dispatch_async(wq_io(), ^{
+            NSString *error = nil;
+            BOOL ok = WQArchiveExtract(self->_path, destination, &error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.navigationItem.rightBarButtonItem.enabled = YES;
+                if (!ok) { wq_alert(self, @"Extraction failed", error ?: @"Unknown archive error"); return; }
+                [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:destination title:destination.lastPathComponent] animated:YES];
+            });
+        });
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+@end
+
 #pragma mark - Choosing a viewer
 
-static WQOpenMode wq_sniff(NSData *head)
+static WQOpenMode wq_sniff(NSData *head, NSString *path)
 {
     const uint8_t *b = head.bytes;
     NSUInteger n = head.length;
+    NSString *extension = path.pathExtension.lowercaseString;
+    NSSet *media = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
+    NSSet *archives = [NSSet setWithArray:@[@"zip", @"tar", @"gz", @"tgz", @"bz2", @"xz", @"7z"]];
+    NSSet *databases = [NSSet setWithArray:@[@"sqlite", @"sqlite3", @"db", @"db3"]];
+    if ([media containsObject:extension]) return WQOpenMedia;
+    if ([archives containsObject:extension]) return WQOpenArchive;
+    if ([databases containsObject:extension]) return WQOpenDatabase;
+    if (n >= 16 && memcmp(b, "SQLite format 3\0", 16) == 0) return WQOpenDatabase;
+    if (n >= 4 && b[0] == 'P' && b[1] == 'K' && (b[2] == 3 || b[2] == 5 || b[2] == 7)) return WQOpenArchive;
     if (n >= 7 && memcmp(b, "bplist0", 7) == 0) return WQOpenPlist;
+    if (n >= 12 && memcmp(b + 4, "ftyp", 4) == 0) return WQOpenMedia;
     if ((n >= 8 && memcmp(b, "\x89PNG", 4) == 0) || (n >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
-        (n >= 4 && memcmp(b, "GIF8", 4) == 0) || (n >= 12 && memcmp(b + 4, "ftyp", 4) == 0))
+        (n >= 4 && memcmp(b, "GIF8", 4) == 0))
         return WQOpenText;   // images: the file viewer renders them
     if (n == 0) return WQOpenText;
     if (memchr(b, 0, n)) return WQOpenHex;
@@ -492,6 +649,12 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
             vc = editor;
         } else if (m == WQOpenHex) {
             vc = [[WQHexViewController alloc] initWithPath:path readOnly:readOnly];
+        } else if (m == WQOpenMedia) {
+            vc = [[WQMediaViewController alloc] initWithPath:path];
+        } else if (m == WQOpenArchive) {
+            vc = [[WQArchiveViewController alloc] initWithPath:path];
+        } else if (m == WQOpenDatabase) {
+            vc = [[WQDatabaseViewController alloc] initWithPath:path];
         } else {
             WQFileViewController *file = [[WQFileViewController alloc] initWithPath:path];
             file.readOnly = readOnly;
@@ -511,7 +674,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
     if (mode != WQOpenAuto) { push(mode); return; }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSData *head = wq_permission_hint(path, NO) ? nil : wq_read_range(path, 0, 4096, NULL);
-        WQOpenMode m = head ? wq_sniff(head) : WQOpenText;   // unreadable: the file viewer shows why
+        WQOpenMode m = head ? wq_sniff(head, path) : WQOpenText;   // unreadable: the file viewer shows why
         dispatch_async(dispatch_get_main_queue(), ^{ push(m); });
     });
 }
@@ -1479,6 +1642,12 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenText); }],
                 [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenHex); }],
+                [UIAction actionWithTitle:@"Media Player" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
+                                  handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenMedia); }],
+                [UIAction actionWithTitle:@"Archive" image:[UIImage systemImageNamed:@"archivebox"] identifier:nil
+                                  handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenArchive); }],
+                [UIAction actionWithTitle:@"SQLite Database" image:[UIImage systemImageNamed:@"cylinder"] identifier:nil
+                                  handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenDatabase); }],
             ]]];
         }
         if (!current.isLink && (current.isDir || current.isRegular)) {
@@ -2429,8 +2598,11 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
                 cfg.attributedSubtitle = [[NSAttributedString alloc] initWithString:subtitles[j]
                     attributes:@{NSFontAttributeName: IPFont(11, UIFontWeightRegular)}];
             }
-            cfg.imagePlacement = NSDirectionalRectEdgeTop;
-            cfg.imagePadding = 22;
+            // A leading icon and one shared text column keeps every card on a
+            // single visual axis. UIButton's top placement centers the icon
+            // even when its title/subtitle are leading-aligned.
+            cfg.imagePlacement = NSDirectionalRectEdgeLeading;
+            cfg.imagePadding = 14;
             cfg.titlePadding = 5;
             cfg.titleAlignment = UIButtonConfigurationTitleAlignmentLeading;
             cfg.baseForegroundColor = IPCardForeground();
@@ -2443,7 +2615,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
             button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
             button.titleLabel.numberOfLines = 0;
             button.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", loc[0], subtitles[j]];
-            [button.heightAnchor constraintGreaterThanOrEqualToConstant:152].active = YES;
+            [button.heightAnchor constraintGreaterThanOrEqualToConstant:132].active = YES;
             [button addTarget:self action:@selector(openContainerCard:) forControlEvents:UIControlEventTouchUpInside];
             [row addArrangedSubview:button];
         }

@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.3 adds explicit loading, empty, search-empty and access-error folder states; persistent starred locations; reliable icon fallbacks; and a disciplined Pixel type scale. Version 1.2 fixed container access for sideloading services that provide multiple generated App Groups.
+Version 1.4 adds native media playback, safe archive browsing/extraction, read-only SQLite browsing and aligned container cards. Version 1.3 added explicit folder states, persistent starred locations, reliable icon fallbacks and a disciplined Pixel type scale.
 
 ## iPixel-Files highlights
 
@@ -23,6 +23,7 @@ Version 1.3 adds explicit loading, empty, search-empty and access-error folder s
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.
 - Text, image, property-list and hex viewing/editing tools.
+- Native video/audio playback, safe ZIP/TAR browsing and extraction, and read-only SQLite table browsing.
 - Safety backups and verification before destructive file operations.
 - Original pixel-art icon and iPhone/iPad icon renditions.
 
