@@ -6,6 +6,7 @@
 
 #import "WQUI.h"
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
+#import <AVFoundation/AVFoundation.h>
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "IPTheme.h"
@@ -474,6 +475,38 @@ UIImage *wq_app_icon(NSString *bundleID)
     return icon;
 }
 
+static UIImage *wq_decorated_thumbnail(UIImage *source, NSString *path, CGSize size)
+{
+    if (!source) return nil;
+    NSString *extension = path.pathExtension.lowercaseString;
+    NSSet *videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
+    NSSet *images = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"tif", @"tiff", @"bmp", @"webp"]];
+    NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
+    NSString *symbol = [videos containsObject:extension] ? @"play.fill" :
+        ([images containsObject:extension] ? @"photo.fill" : ([audio containsObject:extension] ? @"waveform" : nil));
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = 2;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *__unused context) {
+        CGFloat scale = MAX(size.width / source.size.width, size.height / source.size.height);
+        CGSize drawn = CGSizeMake(source.size.width * scale, source.size.height * scale);
+        CGRect rect = CGRectMake((size.width - drawn.width) / 2, (size.height - drawn.height) / 2, drawn.width, drawn.height);
+        [[UIBezierPath bezierPathWithRoundedRect:(CGRect){CGPointZero, size} cornerRadius:12] addClip];
+        [source drawInRect:rect];
+        if (symbol) {
+            CGFloat badge = MIN(size.width, size.height) * 0.29;
+            CGRect badgeRect = CGRectMake(size.width - badge - 7, size.height - badge - 7, badge, badge);
+            [[UIColor.blackColor colorWithAlphaComponent:0.72] setFill];
+            [[UIBezierPath bezierPathWithOvalInRect:badgeRect] fill];
+            UIImage *icon = [[UIImage systemImageNamed:symbol withConfiguration:
+                [UIImageSymbolConfiguration configurationWithPointSize:badge * 0.46 weight:UIImageSymbolWeightBold]]
+                imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+            [icon drawAtPoint:CGPointMake(CGRectGetMidX(badgeRect) - icon.size.width / 2,
+                                         CGRectGetMidY(badgeRect) - icon.size.height / 2)];
+        }
+    }];
+}
+
 void wq_file_thumbnail(NSString *path, CGSize size, void (^completion)(UIImage *image))
 {
     if (!path.length || !completion) return;
@@ -496,40 +529,26 @@ void wq_file_thumbnail(NSString *path, CGSize size, void (^completion)(UIImage *
                          size:size
                         scale:3.0
           representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
+        void (^finish)(UIImage *) = ^(UIImage *source) {
+            UIImage *image = wq_decorated_thumbnail(source, path, size);
+            if (image) [cache setObject:image forKey:path];
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
+        };
         [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
             completionHandler:^(QLThumbnailRepresentation *representation, NSError *__unused error) {
                 UIImage *image = representation.UIImage;
-                if (image) {
-                    NSString *extension = path.pathExtension.lowercaseString;
-                    NSSet *videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
-                    NSSet *images = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"tif", @"tiff", @"bmp", @"webp"]];
-                    NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
-                    NSString *symbol = [videos containsObject:extension] ? @"play.fill" :
-                        ([images containsObject:extension] ? @"photo.fill" : ([audio containsObject:extension] ? @"waveform" : nil));
-                    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
-                    format.scale = 2;
-                    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
-                    image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *__unused context) {
-                        CGFloat scale = MAX(size.width / image.size.width, size.height / image.size.height);
-                        CGSize drawn = CGSizeMake(image.size.width * scale, image.size.height * scale);
-                        CGRect rect = CGRectMake((size.width - drawn.width) / 2, (size.height - drawn.height) / 2, drawn.width, drawn.height);
-                        [[UIBezierPath bezierPathWithRoundedRect:(CGRect){CGPointZero, size} cornerRadius:12] addClip];
-                        [image drawInRect:rect];
-                        if (symbol) {
-                            CGFloat badge = MIN(size.width, size.height) * 0.29;
-                            CGRect badgeRect = CGRectMake(size.width - badge - 7, size.height - badge - 7, badge, badge);
-                            [[UIColor.blackColor colorWithAlphaComponent:0.72] setFill];
-                            [[UIBezierPath bezierPathWithOvalInRect:badgeRect] fill];
-                            UIImage *icon = [[UIImage systemImageNamed:symbol withConfiguration:
-                                [UIImageSymbolConfiguration configurationWithPointSize:badge * 0.46 weight:UIImageSymbolWeightBold]]
-                                imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-                            [icon drawAtPoint:CGPointMake(CGRectGetMidX(badgeRect) - icon.size.width / 2,
-                                                         CGRectGetMidY(badgeRect) - icon.size.height / 2)];
-                        }
+                if (image) { finish(image); return; }
+                NSSet *videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
+                if (![videos containsObject:path.pathExtension.lowercaseString]) { finish(nil); return; }
+                AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+                AVAssetImageGenerator *generator = [AVAssetImageGenerator assetImageGeneratorWithAsset:asset];
+                generator.appliesPreferredTrackTransform = YES;
+                generator.maximumSize = CGSizeMake(size.width * 2, size.height * 2);
+                [generator generateCGImageAsynchronouslyForTime:CMTimeMakeWithSeconds(0.1, 600)
+                    completionHandler:^(CGImageRef frame, CMTime __unused actualTime, NSError *__unused frameError) {
+                        (void)generator;
+                        finish(frame ? [UIImage imageWithCGImage:frame] : nil);
                     }];
-                }
-                if (image) [cache setObject:image forKey:path];
-                dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
             }];
     });
 }

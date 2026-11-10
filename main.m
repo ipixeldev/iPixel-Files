@@ -468,12 +468,13 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 
 #pragma mark - Media and archives
 
-@interface WQMediaViewController : AVPlayerViewController <UIGestureRecognizerDelegate>
+@interface WQMediaViewController : UIViewController <UIGestureRecognizerDelegate>
 - (instancetype)initWithPath:(NSString *)path;
 @end
 
 @implementation WQMediaViewController {
     NSString *_path;
+    AVPlayerViewController *_playerController;
 }
 
 - (instancetype)initWithPath:(NSString *)path
@@ -488,14 +489,37 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     self.view.backgroundColor = UIColor.blackColor;
     (void)wq_grant(_path.stringByDeletingLastPathComponent);
     (void)wq_grant(_path);
-    self.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:_path]];
     self.modalPresentationStyle = UIModalPresentationFullScreen;
+
+    _playerController = [AVPlayerViewController new];
+    _playerController.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:_path]];
+    _playerController.showsPlaybackControls = YES;
+    [self addChildViewController:_playerController];
+    _playerController.view.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_playerController.view];
+    [NSLayoutConstraint activateConstraints:@[
+        [_playerController.view.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_playerController.view.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_playerController.view.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_playerController.view.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
+    ]];
+    [_playerController didMoveToParentViewController:self];
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
                                                                           action:@selector(handleDismissPan:)];
     pan.delegate = self;
     pan.cancelsTouchesInView = NO;
     [self.view addGestureRecognizer:pan];
+    UIButton *close = [self overlayButtonWithSymbol:@"xmark" action:@selector(closeMedia)];
+    UIButton *share = [self overlayButtonWithSymbol:@"square.and.arrow.up" action:@selector(shareMedia)];
+    [self.view addSubview:close];
+    [self.view addSubview:share];
+    [NSLayoutConstraint activateConstraints:@[
+        [close.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
+        [close.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [share.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [share.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12]
+    ]];
     NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
     if ([audio containsObject:_path.pathExtension.lowercaseString]) {
         (void)[AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
@@ -503,7 +527,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
         art.tintColor = UIColor.systemCyanColor;
         art.contentMode = UIViewContentModeScaleAspectFit;
         art.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.contentOverlayView addSubview:art];
+        [_playerController.contentOverlayView addSubview:art];
         UILabel *name = [UILabel new];
         name.text = _path.lastPathComponent;
         name.textColor = UIColor.whiteColor;
@@ -511,16 +535,32 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
         name.textAlignment = NSTextAlignmentCenter;
         name.lineBreakMode = NSLineBreakByTruncatingMiddle;
         name.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.contentOverlayView addSubview:name];
+        [_playerController.contentOverlayView addSubview:name];
         [NSLayoutConstraint activateConstraints:@[
-            [art.centerXAnchor constraintEqualToAnchor:self.contentOverlayView.centerXAnchor],
-            [art.centerYAnchor constraintEqualToAnchor:self.contentOverlayView.centerYAnchor constant:-44],
+            [art.centerXAnchor constraintEqualToAnchor:_playerController.contentOverlayView.centerXAnchor],
+            [art.centerYAnchor constraintEqualToAnchor:_playerController.contentOverlayView.centerYAnchor constant:-44],
             [art.widthAnchor constraintEqualToConstant:112], [art.heightAnchor constraintEqualToConstant:112],
             [name.topAnchor constraintEqualToAnchor:art.bottomAnchor constant:18],
-            [name.leadingAnchor constraintEqualToAnchor:self.contentOverlayView.leadingAnchor constant:28],
-            [name.trailingAnchor constraintEqualToAnchor:self.contentOverlayView.trailingAnchor constant:-28]
+            [name.leadingAnchor constraintEqualToAnchor:_playerController.contentOverlayView.leadingAnchor constant:28],
+            [name.trailingAnchor constraintEqualToAnchor:_playerController.contentOverlayView.trailingAnchor constant:-28]
         ]];
     }
+}
+
+- (UIButton *)overlayButtonWithSymbol:(NSString *)symbol action:(SEL)action
+{
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    configuration.image = [UIImage systemImageNamed:symbol];
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    configuration.baseBackgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.55];
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.widthAnchor constraintEqualToConstant:44], [button.heightAnchor constraintEqualToConstant:44]
+    ]];
+    return button;
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
@@ -548,7 +588,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     if (pan.state != UIGestureRecognizerStateEnded && pan.state != UIGestureRecognizerStateCancelled) return;
     CGFloat velocity = [pan velocityInView:self.view].y;
     if (pan.state == UIGestureRecognizerStateEnded && (y > 120 || velocity > 900)) {
-        [self.player pause];
+        [_playerController.player pause];
         [UIView animateWithDuration:0.22 animations:^{
             self.view.transform = CGAffineTransformMakeTranslation(0, self.view.bounds.size.height);
             self.view.alpha = 0;
@@ -566,14 +606,17 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    [self.player play];
+    [_playerController.player play];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
-    [self.player pause];
+    [_playerController.player pause];
 }
+
+- (void)closeMedia { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)shareMedia { wq_share(self, _path, nil); }
 
 @end
 
@@ -987,6 +1030,9 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     WQFolderSortKey _sortKey;
     BOOL _sortAscending;
     BOOL _gridView;
+    BOOL _folderViewAppeared;
+    BOOL _tableRefreshPending;
+    BOOL _tableRefreshScheduled;
 }
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
@@ -1018,6 +1064,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     [super viewDidLoad];
     self.refreshControl = [UIRefreshControl new];
     self.tableView.separatorStyle = _gridView ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
+    self.tableView.prefetchDataSource = (id<UITableViewDataSourcePrefetching>)self;
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     _sortItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down.circle"]
                                                  menu:[self sortMenu]];
@@ -1244,7 +1291,20 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     }];
     _all = source;
     [self applyFilter];
-    [self.tableView reloadData];
+    [self scheduleTableRefresh];
+}
+
+- (void)scheduleTableRefresh
+{
+    _tableRefreshPending = YES;
+    if (!_folderViewAppeared || _tableRefreshScheduled) return;
+    _tableRefreshScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self->_tableRefreshScheduled = NO;
+        if (!self->_folderViewAppeared || !self->_tableRefreshPending) return;
+        self->_tableRefreshPending = NO;
+        [UIView performWithoutAnimation:^{ [self.tableView reloadData]; }];
+    });
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -1255,9 +1315,17 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     if (_scanNeedsRefresh || _lastReloadFinished <= 0 || age > 2.0) [self reload];
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    _folderViewAppeared = YES;
+    if (_tableRefreshPending) [self scheduleTableRefresh];
+}
+
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
+    _folderViewAppeared = NO;
     if (_selectingFiles) [self exitFileSelection];
     if (_selectingBackups) [self exitBackupSelection];
     if (_scanInFlight) {
@@ -1790,11 +1858,19 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
         }];
         if (itemIndex == NSNotFound) return;
         strongSelf->_items[itemIndex].thumbnail = image;
-        NSUInteger row = strongSelf->_gridView ? itemIndex / 2 : itemIndex;
-        NSIndexPath *current = [NSIndexPath indexPathForRow:(NSInteger)row inSection:0];
-        if ([[strongSelf.tableView indexPathsForVisibleRows] containsObject:current])
-            [strongSelf.tableView reloadRowsAtIndexPaths:@[current] withRowAnimation:UITableViewRowAnimationNone];
+        [strongSelf scheduleTableRefresh];
     });
+}
+
+- (void)tableView:(UITableView *)tableView prefetchRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
+{
+    if (_error || _scanInFlight || _items.count == 0) return;
+    for (NSIndexPath *indexPath in indexPaths) {
+        NSUInteger first = _gridView ? (NSUInteger)indexPath.row * 2 : (NSUInteger)indexPath.row;
+        NSUInteger count = _gridView ? 2 : 1;
+        for (NSUInteger offset = 0; offset < count && first + offset < _items.count; offset++)
+            [self requestThumbnailForItem:_items[first + offset]];
+    }
 }
 
 - (UIMenu *)gridMenuForItem:(WQItem *)item

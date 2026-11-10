@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.6 adds compact media names, fixed-size thumbnail cards, visible media-type badges and a dedicated audio presentation while removing duplicated player controls. Version 1.5 added asynchronous image/video thumbnails, persistent list/grid folder views and swipe-down media dismissal.
+Version 1.7 stabilizes audio playback controls, prefetches and falls back when video thumbnails are slow, and removes transient row overlap during folder navigation. Version 1.6 added compact media names, media-type badges, improved cards and multi-file sharing.
 
 ## iPixel-Files highlights
 
