@@ -18,6 +18,17 @@ static sqlite3 *wqd_open(NSString *path, NSString **errorText)
 {
     (void)wq_grant(path.stringByDeletingLastPathComponent);
     (void)wq_grant(path);
+    NSString *lower = path.lowercaseString;
+    if ([lower hasSuffix:@"-wal"] || [lower hasSuffix:@"-shm"]) {
+        NSString *main = [path substringToIndex:path.length - 4];
+        struct stat st;
+        if (!wq_stat(main, &st) || !S_ISREG(st.st_mode)) {
+            if (errorText) *errorText = @"This is a SQLite sidecar, not a standalone database. Its matching main database was not found.";
+            return NULL;
+        }
+        (void)wq_grant(main);
+        path = main;
+    }
     sqlite3 *database = NULL;
     int result = sqlite3_open_v2(path.fileSystemRepresentation, &database,
                                  SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
@@ -111,7 +122,12 @@ static sqlite3 *wqd_open(NSString *path, NSString **errorText)
 
 - (instancetype)initWithPath:(NSString *)path
 {
-    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) { _path = path.copy; self.title = path.lastPathComponent; }
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _path = path.copy;
+        BOOL sidecar = [path.lowercaseString hasSuffix:@"-wal"] || [path.lowercaseString hasSuffix:@"-shm"];
+        NSString *shown = sidecar ? [path substringToIndex:path.length - 4] : path;
+        self.title = sidecar ? [NSString stringWithFormat:@"%@ (main)", shown.lastPathComponent] : path.lastPathComponent;
+    }
     return self;
 }
 

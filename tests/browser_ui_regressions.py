@@ -7,6 +7,7 @@ main = (ROOT / "main.m").read_text()
 sharing = (ROOT / "WQSharing.m").read_text()
 ui = (ROOT / "WQUI.m").read_text()
 header = (ROOT / "WQSharing.h").read_text()
+database = (ROOT / "WQDatabase.m").read_text()
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -40,8 +41,12 @@ require(main, "modalPresentationStyle = UIModalPresentationFullScreen", "full-sc
 require(main, "handleDismissPan:", "interactive media dismissal")
 require(main, "velocity > 900", "intentional swipe-down threshold")
 forbid(main, "WQMediaViewController : AVPlayerViewController", "unsupported AVPlayerViewController subclass")
+forbid(main, "closeMedia", "obsolete media close button")
 require(main, "addChildViewController:_playerController", "contained native media player")
 require(main, "AVAudioSessionCategoryPlayback", "audio player session")
+require(main, "WQOpenImage", "dedicated full-screen image viewer")
+require(main, "handleImageDismiss:", "interactive image swipe-down dismissal")
+require(main, "toggleControls", "image control visibility toggle")
 require(main, "wq_compact_file_name", "compact long filenames")
 require(main, "@\"video.fill\"", "video type fallback icon")
 require(main, "@\"waveform\"", "audio type fallback icon")
@@ -87,6 +92,16 @@ require(sharing, "exports.count == paths.count", "all selected files prepared be
 require(main, "@\"Select Files\"", "general file selection mode")
 require(main, "shareSelectedFiles", "multi-file share action")
 require(main, "@\"Share or Save Selected Files\"", "multi-file share accessibility label")
+require(main, "title:@\"Share\" handler:", "non-destructive leading file swipe")
+require(main, "trailingSwipeActionsConfigurationForRowAtIndexPath", "trailing delete gesture")
+require(main, "WQRecentFoldersKey", "recent folder persistence")
+require(main, "WQRecentFilesKey", "recent file persistence")
+require(main, "wq_clear_recents", "clear all recents action")
+require(main, "WQGlobalSearchViewController", "cross-location search screen")
+require(main, "examined < 25000", "global search work limit")
+require(main, "wq_measure_tree(path, nil, &bytes)", "recursive folder info measurement")
+require(database, "hasSuffix:@\"-wal\"", "SQLite WAL sidecar detection")
+require(database, "substringToIndex:path.length - 4", "SQLite sidecar main-file redirection")
 clear_preparation = sharing.split("static void wq_clear_preparation", 1)[1].split("static BOOL wq_present_share", 1)[0]
 require(clear_preparation, "if (!host) return;", "nil weak host association guard")
 

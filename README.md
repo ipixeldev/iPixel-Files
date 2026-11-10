@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.7 stabilizes audio playback controls, prefetches and falls back when video thumbnails are slow, and removes transient row overlap during folder navigation. Version 1.6 added compact media names, media-type badges, improved cards and multi-file sharing.
+Version 1.8 adds gesture-first image viewing, recents, bounded cross-location search, measured folder sizes and SQLite sidecar handling. Version 1.7 stabilized audio playback controls, thumbnail loading and folder transitions.
 
 ## iPixel-Files highlights
 
@@ -20,12 +20,14 @@ Version 1.7 stabilizes audio playback controls, prefetches and falls back when v
 - Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
 - Multi-select regular files and send them together to Share or Save to Files.
 - Persistent starred folders with quick access from Home.
+- Recent folders and viewed files with per-item removal and Clear All.
+- Bounded global search across accessible visited, starred and backup folder trees.
 - Clear loading, loaded-empty, no-results and access-denied folder states.
 - System, Light and Dark appearance modes.
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.
 - Text, image, property-list and hex viewing/editing tools.
-- Image/video thumbnails, full-screen video/audio playback with swipe-down dismissal, safe ZIP/TAR browsing and extraction, and read-only SQLite table browsing.
+- Image/video thumbnails; full-screen image, video and audio viewing with swipe-down dismissal; safe ZIP/TAR browsing and extraction; and read-only SQLite table browsing, including redirecting WAL/SHM sidecars to their main database.
 - Safety backups and verification before destructive file operations.
 - Original pixel-art icon and iPhone/iPad icon renditions.
 
@@ -77,8 +79,9 @@ the way KAMUI does it.
 - **Files**: browse, read and share files; each opens in the fitting tool,
   and **Open As** switches between them. Saving writes back in place (same
   inode, owner and attributes). Create folders, import files, rename and
-  delete (long-press, or swipe a row left or right; deleting always asks
-  first). Long-press a folder to share it as a ZIP.
+  delete (long-press or swipe right-to-left; deleting always asks first).
+  Swipe left-to-right to share, keeping the navigation-back gesture
+  non-destructive. Long-press a folder to share it as a ZIP.
   - **Plist editor**: browse dictionaries and arrays, edit values by type
     (switches for booleans, numbers, text, dates, data as hex), add, delete,
     rename and reorder. Saves in the file's own format (binary or XML).

@@ -43,6 +43,9 @@ static BOOL wq_regular_file_for_ui(NSString *path)
 }
 
 static NSString *const WQStarredLocationsKey = @"WQStarredLocationsV1";
+static NSString *const WQRecentFoldersKey = @"WQRecentFoldersV1";
+static NSString *const WQRecentFilesKey = @"WQRecentFilesV1";
+static NSString *const WQRecentsDidChangeNotification = @"WQRecentsDidChangeNotification";
 
 static NSArray<NSDictionary<NSString *, NSString *> *> *wq_starred_locations(void)
 {
@@ -78,6 +81,53 @@ static void wq_set_location_starred(NSString *path, NSString *name, BOOL starred
     [NSUserDefaults.standardUserDefaults setObject:items forKey:WQStarredLocationsKey];
 }
 
+static NSArray<NSDictionary<NSString *, NSString *> *> *wq_recent_items(BOOL folders)
+{
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:folders ? WQRecentFoldersKey : WQRecentFilesKey];
+    NSMutableArray *valid = [NSMutableArray new];
+    for (id value in saved) {
+        if (![value isKindOfClass:NSDictionary.class]) continue;
+        NSString *path = value[@"path"], *name = value[@"name"];
+        if (![path isKindOfClass:NSString.class] || ![path hasPrefix:@"/"]) continue;
+        [valid addObject:@{@"path": path.stringByStandardizingPath,
+                           @"name": [name isKindOfClass:NSString.class] && name.length ? name : path.lastPathComponent}];
+    }
+    return valid;
+}
+
+static void wq_record_recent(NSString *path, NSString *name, BOOL folder)
+{
+    if (!path.length || ![path hasPrefix:@"/"]) return;
+    NSString *key = path.stringByStandardizingPath;
+    NSMutableArray *items = wq_recent_items(folder).mutableCopy;
+    NSIndexSet *old = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *item, NSUInteger __unused idx, BOOL *__unused stop) {
+        return [item[@"path"] isEqualToString:key];
+    }];
+    [items removeObjectsAtIndexes:old];
+    [items insertObject:@{@"path": key, @"name": name.length ? name : (key.lastPathComponent ?: key)} atIndex:0];
+    if (items.count > 24) [items removeObjectsInRange:NSMakeRange(24, items.count - 24)];
+    [NSUserDefaults.standardUserDefaults setObject:items forKey:folder ? WQRecentFoldersKey : WQRecentFilesKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQRecentsDidChangeNotification object:nil];
+}
+
+static void wq_remove_recent(NSString *path, BOOL folder)
+{
+    NSMutableArray *items = wq_recent_items(folder).mutableCopy;
+    NSIndexSet *matches = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *item, NSUInteger __unused idx, BOOL *__unused stop) {
+        return [item[@"path"] isEqualToString:path];
+    }];
+    [items removeObjectsAtIndexes:matches];
+    [NSUserDefaults.standardUserDefaults setObject:items forKey:folder ? WQRecentFoldersKey : WQRecentFilesKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQRecentsDidChangeNotification object:nil];
+}
+
+static void wq_clear_recents(void)
+{
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:WQRecentFoldersKey];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:WQRecentFilesKey];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQRecentsDidChangeNotification object:nil];
+}
+
 #pragma mark - Item
 
 @interface WQItem : NSObject
@@ -102,7 +152,7 @@ static void wq_set_location_starred(NSString *path, NSString *name, BOOL starred
 #pragma mark - File viewer
 
 typedef NS_ENUM(NSInteger, WQOpenMode) {
-    WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenHex, WQOpenMedia, WQOpenArchive, WQOpenDatabase
+    WQOpenAuto, WQOpenPlist, WQOpenText, WQOpenImage, WQOpenHex, WQOpenMedia, WQOpenArchive, WQOpenDatabase
 };
 // Opens a file in the fitting viewer (Auto: chosen from its first bytes).
 static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readOnly, WQOpenMode mode);
@@ -216,6 +266,8 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenPlist]; }],
         [UIAction actionWithTitle:@"Text / Image" image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenText]; }],
+        [UIAction actionWithTitle:@"Image Viewer" image:[UIImage systemImageNamed:@"photo"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenImage]; }],
         [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenHex]; }],
         [UIAction actionWithTitle:@"Media Player" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
@@ -468,6 +520,129 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 
 #pragma mark - Media and archives
 
+@interface WQImageViewController : UIViewController <UIScrollViewDelegate, UIGestureRecognizerDelegate>
+- (instancetype)initWithPath:(NSString *)path;
+@end
+
+@implementation WQImageViewController {
+    NSString *_path;
+    UIScrollView *_scrollView;
+    UIImageView *_imageView;
+    UIButton *_shareButton;
+    BOOL _controlsHidden;
+}
+
+- (instancetype)initWithPath:(NSString *)path
+{
+    if ((self = [super init])) { _path = path.copy; self.modalPresentationStyle = UIModalPresentationFullScreen; }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+    _scrollView = [UIScrollView new];
+    _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    _scrollView.delegate = self;
+    _scrollView.minimumZoomScale = 1;
+    _scrollView.maximumZoomScale = 6;
+    _scrollView.backgroundColor = UIColor.blackColor;
+    [self.view addSubview:_scrollView];
+    _imageView = [UIImageView new];
+    _imageView.translatesAutoresizingMaskIntoConstraints = NO;
+    _imageView.contentMode = UIViewContentModeScaleAspectFit;
+    [_scrollView addSubview:_imageView];
+    [NSLayoutConstraint activateConstraints:@[
+        [_scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_imageView.leadingAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.leadingAnchor],
+        [_imageView.trailingAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.trailingAnchor],
+        [_imageView.topAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.topAnchor],
+        [_imageView.bottomAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.bottomAnchor],
+        [_imageView.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor],
+        [_imageView.heightAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.heightAnchor]
+    ]];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(toggleControls)];
+    [_scrollView addGestureRecognizer:tap];
+    UIPanGestureRecognizer *dismiss = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleImageDismiss:)];
+    dismiss.delegate = self;
+    dismiss.cancelsTouchesInView = NO;
+    [self.view addGestureRecognizer:dismiss];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    configuration.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    configuration.baseBackgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.55];
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    __weak typeof(self) weakSelf = self;
+    _shareButton = [UIButton buttonWithConfiguration:configuration primaryAction:
+        [UIAction actionWithHandler:^(UIAction *__unused action) {
+            WQImageViewController *strongSelf = weakSelf;
+            if (strongSelf) wq_share(strongSelf, strongSelf->_path, nil);
+        }]];
+    _shareButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_shareButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [_shareButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [_shareButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [_shareButton.widthAnchor constraintEqualToConstant:44], [_shareButton.heightAnchor constraintEqualToConstant:44]
+    ]];
+    NSString *path = _path;
+    dispatch_async(wq_io(), ^{
+        NSString *error = nil;
+        NSData *data = wq_read(path, 64 * 1024 * 1024, &error);
+        UIImage *image = data ? [UIImage imageWithData:data] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self->_imageView.image = image;
+            if (!image) wq_alert(self, @"Cannot open image", error ?: @"The image could not be decoded.");
+        });
+    });
+}
+
+- (UIView *)viewForZoomingInScrollView:(UIScrollView *)scrollView { return _imageView; }
+- (BOOL)prefersStatusBarHidden { return _controlsHidden; }
+- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+
+- (void)toggleControls
+{
+    _controlsHidden = !_controlsHidden;
+    [self setNeedsStatusBarAppearanceUpdate];
+    [UIView animateWithDuration:0.2 animations:^{ self->_shareButton.alpha = self->_controlsHidden ? 0 : 1; }];
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
+{
+    if (![gestureRecognizer isKindOfClass:UIPanGestureRecognizer.class] || _scrollView.zoomScale > 1.01) return NO;
+    CGPoint velocity = [(UIPanGestureRecognizer *)gestureRecognizer velocityInView:self.view];
+    return velocity.y > 0 && velocity.y > fabs(velocity.x) * 1.2;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *__unused)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *__unused)other { return YES; }
+
+- (void)handleImageDismiss:(UIPanGestureRecognizer *)pan
+{
+    CGFloat y = MAX(0, [pan translationInView:self.view].y);
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        self.view.transform = CGAffineTransformMakeTranslation(0, y);
+        self.view.alpha = 1 - MIN(0.4, y / MAX(1, self.view.bounds.size.height) * 0.4);
+        return;
+    }
+    if (pan.state != UIGestureRecognizerStateEnded && pan.state != UIGestureRecognizerStateCancelled) return;
+    CGFloat velocity = [pan velocityInView:self.view].y;
+    if (pan.state == UIGestureRecognizerStateEnded && (y > 120 || velocity > 900)) {
+        [UIView animateWithDuration:0.2 animations:^{
+            self.view.transform = CGAffineTransformMakeTranslation(0, self.view.bounds.size.height);
+            self.view.alpha = 0;
+        } completion:^(__unused BOOL finished) { [self dismissViewControllerAnimated:NO completion:nil]; }];
+    } else {
+        [UIView animateWithDuration:0.24 animations:^{ self.view.transform = CGAffineTransformIdentity; self.view.alpha = 1; }];
+    }
+}
+@end
+
 @interface WQMediaViewController : UIViewController <UIGestureRecognizerDelegate>
 - (instancetype)initWithPath:(NSString *)path;
 @end
@@ -510,14 +685,10 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     pan.delegate = self;
     pan.cancelsTouchesInView = NO;
     [self.view addGestureRecognizer:pan];
-    UIButton *close = [self overlayButtonWithSymbol:@"xmark" action:@selector(closeMedia)];
     UIButton *share = [self overlayButtonWithSymbol:@"square.and.arrow.up" action:@selector(shareMedia)];
-    [self.view addSubview:close];
     [self.view addSubview:share];
     [NSLayoutConstraint activateConstraints:@[
-        [close.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
-        [close.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [share.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [share.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
         [share.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12]
     ]];
     NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
@@ -615,7 +786,6 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     [_playerController.player pause];
 }
 
-- (void)closeMedia { [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)shareMedia { wq_share(self, _path, nil); }
 
 @end
@@ -720,18 +890,23 @@ static WQOpenMode wq_sniff(NSData *head, NSString *path)
     NSUInteger n = head.length;
     NSString *extension = path.pathExtension.lowercaseString;
     NSSet *media = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
+    NSSet *images = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"tif", @"tiff", @"bmp", @"webp"]];
     NSSet *archives = [NSSet setWithArray:@[@"zip", @"tar", @"gz", @"tgz", @"bz2", @"xz", @"7z"]];
     NSSet *databases = [NSSet setWithArray:@[@"sqlite", @"sqlite3", @"db", @"db3"]];
+    NSSet *databaseSidecars = [NSSet setWithArray:@[@"sqlite-wal", @"sqlite-shm", @"db-wal", @"db-shm"]];
     if ([media containsObject:extension]) return WQOpenMedia;
+    if ([images containsObject:extension]) return WQOpenImage;
     if ([archives containsObject:extension]) return WQOpenArchive;
     if ([databases containsObject:extension]) return WQOpenDatabase;
+    if ([databaseSidecars containsObject:extension] || [path.lowercaseString hasSuffix:@"-wal"] || [path.lowercaseString hasSuffix:@"-shm"])
+        return WQOpenDatabase;
     if (n >= 16 && memcmp(b, "SQLite format 3\0", 16) == 0) return WQOpenDatabase;
     if (n >= 4 && b[0] == 'P' && b[1] == 'K' && (b[2] == 3 || b[2] == 5 || b[2] == 7)) return WQOpenArchive;
     if (n >= 7 && memcmp(b, "bplist0", 7) == 0) return WQOpenPlist;
     if (n >= 12 && memcmp(b + 4, "ftyp", 4) == 0) return WQOpenMedia;
     if ((n >= 8 && memcmp(b, "\x89PNG", 4) == 0) || (n >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
         (n >= 4 && memcmp(b, "GIF8", 4) == 0))
-        return WQOpenText;   // images: the file viewer renders them
+        return WQOpenImage;
     if (n == 0) return WQOpenText;
     if (memchr(b, 0, n)) return WQOpenHex;
     NSString *text = nil;
@@ -763,6 +938,11 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
             vc = editor;
         } else if (m == WQOpenHex) {
             vc = [[WQHexViewController alloc] initWithPath:path readOnly:readOnly];
+        } else if (m == WQOpenImage) {
+            vc = [[WQImageViewController alloc] initWithPath:path];
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            [origin presentViewController:vc animated:YES completion:nil];
+            return;
         } else if (m == WQOpenMedia) {
             vc = [[WQMediaViewController alloc] initWithPath:path];
             vc.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -788,6 +968,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
                                 : @"Only regular files can be viewed.");
         return;
     }
+    wq_record_recent(path, path.lastPathComponent, NO);
     if (mode != WQOpenAuto) { push(mode); return; }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSData *head = wq_permission_hint(path, NO) ? nil : wq_read_range(path, 0, 4096, NULL);
@@ -1319,6 +1500,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 {
     [super viewDidAppear:animated];
     _folderViewAppeared = YES;
+    wq_record_recent(_path, _baseTitle, YES);
     if (_tableRefreshPending) [self scheduleTableRefresh];
 }
 
@@ -2112,8 +2294,8 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     [self updateBackupSelectionBar];
 }
 
-// Swipe left or right to delete, with the same rules and confirmation as the
-// long-press menu (files are backed up first; backups only as whole units).
+// Right-to-left reveals Delete. The opposite direction is intentionally
+// non-destructive so the interactive navigation-back gesture cannot delete.
 - (UISwipeActionsConfiguration *)deleteSwipeForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (_gridView || _selectingFiles || _selectingBackups || _error) return nil;
@@ -2152,7 +2334,26 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
     leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    return [self deleteSwipeForRowAtIndexPath:indexPath];
+    if (_gridView || _selectingFiles || _selectingBackups || _error ||
+        indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
+    WQItem *item = _items[(NSUInteger)indexPath.row];
+    if (item.isLink || (!item.isDir && !item.isRegular)) return nil;
+    NSString *path = item.path.copy;
+    BOOL directory = item.isDir;
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *share = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+        title:@"Share" handler:^(UIContextualAction *__unused action, UIView *source, void (^done)(BOOL)) {
+            WQDirViewController *strongSelf = weakSelf;
+            done(strongSelf != nil);
+            if (!strongSelf) return;
+            if (directory) wq_share_folder(strongSelf, path, nil, source);
+            else wq_share(strongSelf, path, source);
+        }];
+    share.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
+    share.backgroundColor = IPAccent();
+    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[share]];
+    configuration.performsFirstActionWithFullSwipe = NO;
+    return configuration;
 }
 
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
@@ -2215,6 +2416,8 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenPlist); }],
                 [UIAction actionWithTitle:@"Text / Image" image:[UIImage systemImageNamed:@"doc.plaintext"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenText); }],
+                    [UIAction actionWithTitle:@"Image Viewer" image:[UIImage systemImageNamed:@"photo"] identifier:nil
+                                  handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenImage); }],
                 [UIAction actionWithTitle:@"Hex Viewer" image:[UIImage systemImageNamed:@"number"] identifier:nil
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenHex); }],
                 [UIAction actionWithTitle:@"Media Player" image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
@@ -2284,13 +2487,29 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)showInfoForItem:(WQItem *)item
 {
     NSString *type = item.isDir ? @"Folder" : (item.isRegular ? @"File" : @"Special item");
-    NSString *size = item.isDir ? @"Use folder measurement tools for recursive size" : wq_size_text(item.size);
     NSString *date = wq_folder_date_text(item.modified);
-    NSString *details = [NSString stringWithFormat:
-        @"Type: %@\nSize: %@\nModified: %@\nOwner UID: %u\nMode: %04o%@\n\n%@",
-        type, size, date.length ? date : @"Unknown", item.uid, item.mode & 07777,
-        item.bundleID.length ? [NSString stringWithFormat:@"\nIdentifier: %@", item.bundleID] : @"", item.path];
-    wq_alert(self, item.label ?: item.name, details);
+    NSString *(^details)(NSString *) = ^NSString *(NSString *size) {
+        return [NSString stringWithFormat:
+            @"Type: %@\nSize: %@\nModified: %@\nOwner UID: %u\nMode: %04o%@\n\n%@",
+            type, size, date.length ? date : @"Unknown", item.uid, item.mode & 07777,
+            item.bundleID.length ? [NSString stringWithFormat:@"\nIdentifier: %@", item.bundleID] : @"", item.path];
+    };
+    if (!item.isDir) { wq_alert(self, item.label ?: item.name, details(wq_size_text(item.size))); return; }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:item.label ?: item.name
+        message:details(@"Measuring folder…") preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+    NSString *path = item.path.copy;
+    dispatch_async(wq_io(), ^{
+        unsigned long long bytes = 0;
+        WQMeasureResult result = wq_measure_tree(path, nil, &bytes);
+        NSString *size = result == WQMeasureResultKnown ? wq_size_text(bytes) :
+            (result == WQMeasureResultLimited ? [NSString stringWithFormat:@"At least %@ (some contents are inaccessible)", wq_size_text(bytes)] :
+             (result == WQMeasureResultMissing ? @"Folder is no longer available" : @"Measurement cancelled"));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (alert.presentingViewController) alert.message = details(size);
+        });
+    });
 }
 
 - (void)duplicateItem:(WQItem *)item
@@ -2867,6 +3086,9 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         @"doc.plaintext": @[@"01111100",@"01000110",@"01000011",@"01011111",@"01000001",@"01011111",@"01111111",@"00000000"],
         @"rectangle.split.2x1": @[@"11111111",@"10011001",@"10011001",@"10011001",@"10011001",@"10011001",@"11111111",@"00000000"],
         @"star.fill": @[@"00011000",@"01011010",@"00111100",@"11111111",@"01111110",@"00111100",@"01100110",@"01000010"],
+        @"magnifyingglass": @[@"00111100",@"01100110",@"11000011",@"11000011",@"01100110",@"00111100",@"00011000",@"00001100"],
+        @"folder.fill": @[@"00000000",@"01110000",@"11111110",@"11111111",@"11111111",@"11111111",@"01111110",@"00000000"],
+        @"doc": @[@"01111000",@"01001100",@"01000110",@"01000010",@"01000010",@"01000010",@"01111110",@"00000000"],
     };
     NSArray<NSString *> *rows = glyphs[symbol] ?: glyphs[@"doc.plaintext"];
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
@@ -2971,12 +3193,165 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 @end
 
+@interface WQGlobalSearchViewController : UITableViewController <UISearchResultsUpdating>
+@end
+
+@implementation WQGlobalSearchViewController {
+    NSArray<NSDictionary<NSString *, id> *> *_results;
+    WQScanCancellation *_cancellation;
+    NSUInteger _generation;
+    NSString *_status;
+}
+
+- (instancetype)init
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Global Search";
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.tableView.backgroundColor = IPBackground();
+    UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    search.searchResultsUpdater = self;
+    search.obscuresBackgroundDuringPresentation = NO;
+    search.searchBar.placeholder = @"Search visited and saved locations";
+    search.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    search.searchBar.autocorrectionType = UITextAutocorrectionTypeNo;
+    IPStyleSearchBar(search.searchBar);
+    self.navigationItem.searchController = search;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    _status = @"Type at least two characters to search across accessible locations.";
+}
+
+- (NSArray<NSString *> *)searchRoots
+{
+    NSMutableArray<NSString *> *candidates = [NSMutableArray new];
+    for (NSDictionary *item in wq_recent_items(YES)) [candidates addObject:item[@"path"]];
+    for (NSDictionary *item in wq_starred_locations()) [candidates addObject:item[@"path"]];
+    [candidates addObjectsFromArray:@[wq_backup_root(), wq_app_backup_root()]];
+    NSMutableArray<NSString *> *roots = [NSMutableArray new];
+    for (NSString *candidate in candidates) {
+        if (!candidate.length) continue;
+        BOOL covered = NO;
+        for (NSString *root in roots)
+            if ([candidate isEqualToString:root] || [candidate hasPrefix:[root stringByAppendingString:@"/"]]) { covered = YES; break; }
+        if (!covered) [roots addObject:candidate];
+        if (roots.count == 16) break;
+    }
+    return roots;
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    NSString *query = [searchController.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    [_cancellation cancel];
+    _cancellation = [WQScanCancellation new];
+    NSUInteger generation = ++_generation;
+    if (query.length < 2) {
+        _results = nil; _status = @"Type at least two characters to search across accessible locations.";
+        [self.tableView reloadData]; return;
+    }
+    NSArray<NSString *> *roots = [self searchRoots];
+    if (roots.count == 0) {
+        _results = nil; _status = @"No search roots yet. Open or star folders first, then search again.";
+        [self.tableView reloadData]; return;
+    }
+    _results = nil; _status = @"Searching accessible folders…"; [self.tableView reloadData];
+    WQScanCancellation *cancellation = _cancellation;
+    dispatch_async(wq_io(), ^{
+        NSMutableArray<NSDictionary *> *queue = [NSMutableArray new];
+        for (NSString *root in roots) [queue addObject:@{@"path": root, @"depth": @0}];
+        NSMutableSet<NSString *> *visited = [NSMutableSet new];
+        NSMutableArray *matches = [NSMutableArray new];
+        NSUInteger examined = 0;
+        while (queue.count && !cancellation.isCancelled && examined < 25000 && matches.count < 300) {
+            NSDictionary *entry = queue.firstObject; [queue removeObjectAtIndex:0];
+            NSString *dir = entry[@"path"];
+            NSUInteger depth = [entry[@"depth"] unsignedIntegerValue];
+            if ([visited containsObject:dir]) continue;
+            [visited addObject:dir];
+            NSArray<NSString *> *names = wq_list(dir, NULL);
+            for (NSString *name in names) {
+                if (cancellation.isCancelled) break;
+                examined++;
+                NSString *path = [dir stringByAppendingPathComponent:name];
+                struct stat st;
+                if (!wq_stat(path, &st) || S_ISLNK(st.st_mode)) continue;
+                BOOL folder = S_ISDIR(st.st_mode);
+                if ([name rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound)
+                    [matches addObject:@{@"name": name, @"path": path, @"folder": @(folder)}];
+                if (folder && depth < 10) [queue addObject:@{@"path": path, @"depth": @(depth + 1)}];
+                if (examined >= 25000 || matches.count >= 300) break;
+            }
+        }
+        BOOL limited = examined >= 25000 || matches.count >= 300;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self->_generation || cancellation.isCancelled) return;
+            self->_results = matches;
+            self->_status = matches.count ? (limited ? @"Showing the first matches; the safety limit was reached." : nil)
+                                          : @"No matching files or folders in accessible locations.";
+            [self.tableView reloadData];
+        });
+    });
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{ return _results.count ? (NSInteger)_results.count : 1; }
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"global"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"global"];
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    if (!_results.count) {
+        content.text = _status;
+        content.textProperties.numberOfLines = 0;
+        content.image = [UIImage systemImageNamed:@"magnifyingglass"];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else {
+        NSDictionary *item = _results[(NSUInteger)indexPath.row];
+        content.text = item[@"name"];
+        content.secondaryText = item[@"path"];
+        content.secondaryTextProperties.numberOfLines = 2;
+        content.image = [UIImage systemImageNamed:[item[@"folder"] boolValue] ? @"folder.fill" : @"doc"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    content.textProperties.color = IPPrimaryText(); content.secondaryTextProperties.color = IPSecondaryText();
+    content.imageProperties.tintColor = IPAccent(); cell.contentConfiguration = content; IPStyleCell(cell); return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if ((NSUInteger)indexPath.row >= _results.count) return;
+    NSDictionary *item = _results[(NSUInteger)indexPath.row]; NSString *path = item[@"path"];
+    if ([item[@"folder"] boolValue])
+        [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:path title:item[@"name"]] animated:YES];
+    else wq_open_file(self.navigationController, path, NO, WQOpenAuto);
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+{ return @"Search covers recently visited and starred folder trees that the sandbox escape has already made accessible. Undiscovered container parents cannot be listed globally by iOS."; }
+@end
+
 @interface WQRootViewController : UITableViewController
 @end
 
 @implementation WQRootViewController {
     NSArray<NSArray<NSString *> *> *_locations;  // title, path, symbol
+    NSArray<NSDictionary<NSString *, NSString *> *> *_recentFolders;
+    NSArray<NSDictionary<NSString *, NSString *> *> *_recentFiles;
+    UIBarButtonItem *_clearRecentsItem;
     CGFloat _dashboardWidth;
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (instancetype)init
@@ -3000,16 +3375,23 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     [super viewDidLoad];
     self.navigationController.navigationBar.prefersLargeTitles = NO;
     self.navigationItem.backButtonTitle = @"Home";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+    UIBarButtonItem *appearance = [[UIBarButtonItem alloc]
         initWithImage:[UIImage systemImageNamed:@"paintpalette.fill"]
         style:UIBarButtonItemStylePlain target:self action:@selector(openAppearanceSettings)];
-    self.navigationItem.rightBarButtonItem.accessibilityLabel = @"Appearance";
+    appearance.accessibilityLabel = @"Appearance";
+    _clearRecentsItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"clock.badge.xmark"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(confirmClearRecents)];
+    _clearRecentsItem.accessibilityLabel = @"Clear Recents";
+    self.navigationItem.rightBarButtonItems = @[appearance, _clearRecentsItem];
     self.tableView.backgroundColor = IPBackground();
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 84;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.tableFooterView = [self authorFooter];
     [self rebuildDashboard];
+    [self refreshRecents];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshRecents)
+        name:WQRecentsDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(rebuildDashboard)
         name:UIContentSizeCategoryDidChangeNotification object:nil];
     dispatch_async(wq_io(), ^{
@@ -3027,6 +3409,31 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
             });
         }
     });
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    [self refreshRecents];
+}
+
+- (void)refreshRecents
+{
+    _recentFolders = wq_recent_items(YES);
+    _recentFiles = wq_recent_items(NO);
+    _clearRecentsItem.enabled = _recentFolders.count + _recentFiles.count > 0;
+    [self.tableView reloadData];
+}
+
+- (void)confirmClearRecents
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear all recents?"
+        message:@"This removes folder and file history only. It does not delete any files."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *__unused action) { wq_clear_recents(); }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)openAppearanceSettings
@@ -3048,8 +3455,11 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (void)openContainerCard:(UIButton *)sender
 {
-    [self tableView:self.tableView didSelectRowAtIndexPath:
-        [NSIndexPath indexPathForRow:sender.tag inSection:0]];
+    NSUInteger index = (NSUInteger)sender.tag;
+    UIViewController *next = index < _locations.count
+        ? [[WQDirViewController alloc] initWithPath:_locations[index][1] title:_locations[index][0]]
+        : [WQSystemGroupsViewController new];
+    [self.navigationController pushViewController:next animated:YES];
 }
 
 - (void)rebuildDashboard
@@ -3292,24 +3702,24 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     return footer;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    // System Groups is the extra last row, on iOS 27 only.
-    return section == 0 ? 0 : 8; // Containers are accessible cards in the dashboard header.
+    if (section == 0) return (NSInteger)MIN((NSUInteger)4, _recentFolders.count);
+    if (section == 1) return (NSInteger)MIN((NSUInteger)4, _recentFiles.count);
+    return 9; // Containers are accessible cards in the dashboard header.
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? nil : @"Tools";
+    return section == 0 ? (_recentFolders.count ? @"Recent Folders" : nil)
+        : (section == 1 ? (_recentFiles.count ? @"Viewed Files" : nil) : @"Tools");
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 0 && !wq_system_areas_reachable())
-        return @"On iOS 26, System Data and System Groups can't be reached (worse_query covers them on iOS 27 only), and Internal Daemons need a scan of every file id: the first one can take most of an hour on a well-used device, later ones only check new files.";
-    return section == 1
+    return section == 2
         ? @"Every destructive file action creates a safety copy first."
         : nil;
 }
@@ -3335,25 +3745,23 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"r"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"r"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
-    if (indexPath.section == 0) {
-        if ((NSUInteger)indexPath.row < _locations.count) {
-            NSArray *loc = _locations[(NSUInteger)indexPath.row];
-            c.text = loc[0];
-            c.image = ip_pixel_glyph(loc[2]);
-        } else {
-            c.text = @"System Groups";
-            c.image = ip_pixel_glyph(@"lock.square.stack");
-        }
+    if (indexPath.section < 2) {
+        NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
+                                                     : _recentFiles[(NSUInteger)indexPath.row];
+        c.text = item[@"name"];
+        c.secondaryText = item[@"path"];
+        c.secondaryTextProperties.numberOfLines = 2;
+        c.image = ip_pixel_glyph(indexPath.section == 0 ? @"folder.fill" : @"doc");
     } else {
         NSArray *tools = @[@[@"Apps", @"square.grid.2x2"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
-                           @[@"Starred", @"star.fill"], @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
+                           @[@"Starred", @"star.fill"], @[@"Global Search", @"magnifyingglass"], @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
                            @[@"Dual Browser", @"rectangle.split.2x1"]];
         c.text = tools[(NSUInteger)indexPath.row][0];
         c.image = ip_pixel_glyph(tools[(NSUInteger)indexPath.row][1]);
     }
-    if (indexPath.section == 1) {
+    if (indexPath.section == 2) {
         NSArray *details = @[@"Browse, back up & manage app data", @"Review caches and temporary files",
-            @"Jump directly to a folder or file", @"Return to saved folders quickly", @"Restore or share complete app backups",
+            @"Jump directly to a folder or file", @"Return to saved folders quickly", @"Search across accessible visited and saved folders", @"Restore or share complete app backups",
             @"Recover overwritten and deleted files", @"Activity, access & diagnostics",
             @"Keep two locations open and copy between containers"];
         c.secondaryText = details[(NSUInteger)indexPath.row];
@@ -3376,13 +3784,11 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     UIViewController *next = nil;
-    if (indexPath.section == 0) {
-        if ((NSUInteger)indexPath.row < _locations.count) {
-            NSArray *loc = _locations[(NSUInteger)indexPath.row];
-            next = [[WQDirViewController alloc] initWithPath:loc[1] title:loc[0]];
-        } else {
-            next = [WQSystemGroupsViewController new];
-        }
+    if (indexPath.section < 2) {
+        NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
+                                                     : _recentFiles[(NSUInteger)indexPath.row];
+        if (indexPath.section == 0) next = [[WQDirViewController alloc] initWithPath:item[@"path"] title:item[@"name"]];
+        else { wq_open_file(self.navigationController, item[@"path"], NO, WQOpenAuto); return; }
     } else if (indexPath.row == 0) {
         next = [WQAppsViewController new];
     } else if (indexPath.row == 1) {
@@ -3393,17 +3799,36 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     } else if (indexPath.row == 3) {
         next = [WQStarredViewController new];
     } else if (indexPath.row == 4) {
+        next = [WQGlobalSearchViewController new];
+    } else if (indexPath.row == 5) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App Backups"];
-    } else if (indexPath.row == 5) {
+    } else if (indexPath.row == 6) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
-    } else if (indexPath.row == 6) {
+    } else if (indexPath.row == 7) {
         next = [WQLogViewController new];
     } else {
         next = [WQDualBrowserViewController new];
     }
     [self.navigationController pushViewController:next animated:YES];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section > 1) return nil;
+    NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
+                                                 : _recentFiles[(NSUInteger)indexPath.row];
+    NSString *path = item[@"path"]; BOOL folder = indexPath.section == 0;
+    UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"Remove" handler:^(UIContextualAction *__unused action, UIView *__unused source, void (^done)(BOOL)) {
+            wq_remove_recent(path, folder); done(YES);
+        }];
+    remove.image = [UIImage systemImageNamed:@"xmark"];
+    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[remove]];
+    configuration.performsFirstActionWithFullSwipe = NO;
+    return configuration;
 }
 
 - (void)goToPath
