@@ -92,6 +92,8 @@ static void wq_set_location_starred(NSString *path, NSString *name, BOOL starred
 @property (nonatomic) mode_t mode;
 @property (nonatomic) uid_t uid;
 @property (nonatomic, strong) NSDate *modified;
+@property (nonatomic, strong) UIImage *thumbnail;
+@property (nonatomic) BOOL thumbnailRequested;
 @end
 
 @implementation WQItem
@@ -466,7 +468,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 
 #pragma mark - Media and archives
 
-@interface WQMediaViewController : AVPlayerViewController
+@interface WQMediaViewController : AVPlayerViewController <UIGestureRecognizerDelegate>
 - (instancetype)initWithPath:(NSString *)path;
 @end
 
@@ -487,8 +489,81 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     (void)wq_grant(_path.stringByDeletingLastPathComponent);
     (void)wq_grant(_path);
     self.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:_path]];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemAction target:self action:@selector(shareMedia)];
+    self.modalPresentationStyle = UIModalPresentationFullScreen;
+
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                          action:@selector(handleDismissPan:)];
+    pan.delegate = self;
+    pan.cancelsTouchesInView = NO;
+    [self.view addGestureRecognizer:pan];
+
+    UIButton *close = [self overlayButtonWithSymbol:@"xmark" action:@selector(closeMedia)];
+    UIButton *share = [self overlayButtonWithSymbol:@"square.and.arrow.up" action:@selector(shareMedia)];
+    [self.view addSubview:close];
+    [self.view addSubview:share];
+    [NSLayoutConstraint activateConstraints:@[
+        [close.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
+        [close.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [share.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [share.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12]
+    ]];
+}
+
+- (UIButton *)overlayButtonWithSymbol:(NSString *)symbol action:(SEL)action
+{
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    configuration.image = [UIImage systemImageNamed:symbol];
+    configuration.baseForegroundColor = UIColor.whiteColor;
+    configuration.baseBackgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.55];
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.widthAnchor constraintEqualToConstant:44],
+        [button.heightAnchor constraintEqualToConstant:44]
+    ]];
+    return button;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
+{
+    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
+    CGPoint velocity = [pan velocityInView:self.view];
+    return velocity.y > 0 && velocity.y > fabs(velocity.x) * 1.2;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *__unused)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *__unused)other
+{
+    return YES;
+}
+
+- (void)handleDismissPan:(UIPanGestureRecognizer *)pan
+{
+    CGFloat y = MAX(0, [pan translationInView:self.view].y);
+    CGFloat progress = MIN(1, y / MAX(1, self.view.bounds.size.height));
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        self.view.transform = CGAffineTransformMakeTranslation(0, y);
+        self.view.alpha = 1 - progress * 0.35;
+        return;
+    }
+    if (pan.state != UIGestureRecognizerStateEnded && pan.state != UIGestureRecognizerStateCancelled) return;
+    CGFloat velocity = [pan velocityInView:self.view].y;
+    if (pan.state == UIGestureRecognizerStateEnded && (y > 120 || velocity > 900)) {
+        [self.player pause];
+        [UIView animateWithDuration:0.22 animations:^{
+            self.view.transform = CGAffineTransformMakeTranslation(0, self.view.bounds.size.height);
+            self.view.alpha = 0;
+        } completion:^(__unused BOOL finished) {
+            [self dismissViewControllerAnimated:NO completion:nil];
+        }];
+    } else {
+        [UIView animateWithDuration:0.25 delay:0
+             usingSpringWithDamping:0.82 initialSpringVelocity:0 options:UIViewAnimationOptionCurveEaseOut
+                         animations:^{ self.view.transform = CGAffineTransformIdentity; self.view.alpha = 1; }
+                         completion:nil];
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -504,6 +579,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 }
 
 - (void)shareMedia { wq_share(self, _path, nil); }
+- (void)closeMedia { [self dismissViewControllerAnimated:YES completion:nil]; }
 @end
 
 @interface WQArchiveViewController : UITableViewController
@@ -651,6 +727,9 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
             vc = [[WQHexViewController alloc] initWithPath:path readOnly:readOnly];
         } else if (m == WQOpenMedia) {
             vc = [[WQMediaViewController alloc] initWithPath:path];
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            [origin presentViewController:vc animated:YES completion:nil];
+            return;
         } else if (m == WQOpenArchive) {
             vc = [[WQArchiveViewController alloc] initWithPath:path];
         } else if (m == WQOpenDatabase) {
@@ -704,6 +783,83 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
 
 static NSString *gTransferShelfPath;
 static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfDidChangeNotification";
+static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
+
+@interface WQGridCell : UITableViewCell
+- (void)configureSlot:(NSUInteger)slot item:(WQItem *_Nullable)item menu:(UIMenu *_Nullable)menu;
+@property (nonatomic, copy) void (^openSlot)(NSUInteger slot);
+@end
+
+@implementation WQGridCell {
+    NSArray<UIButton *> *_buttons;
+}
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier
+{
+    if ((self = [super initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseIdentifier])) {
+        self.backgroundColor = UIColor.clearColor;
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        NSMutableArray *buttons = [NSMutableArray new];
+        for (NSUInteger slot = 0; slot < 2; slot++) {
+            UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+            button.tag = (NSInteger)slot;
+            button.showsMenuAsPrimaryAction = NO;
+            button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+            [button addTarget:self action:@selector(openButton:) forControlEvents:UIControlEventTouchUpInside];
+            [buttons addObject:button];
+        }
+        _buttons = buttons;
+        UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:_buttons];
+        stack.axis = UILayoutConstraintAxisHorizontal;
+        stack.spacing = 10;
+        stack.distribution = UIStackViewDistributionFillEqually;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:5],
+            [stack.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-5],
+            [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
+            [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5]
+        ]];
+    }
+    return self;
+}
+
+- (void)configureSlot:(NSUInteger)slot item:(WQItem *)item menu:(UIMenu *)menu
+{
+    UIButton *button = _buttons[slot];
+    button.hidden = item == nil;
+    button.menu = menu;
+    if (!item) return;
+    UIImage *image = item.bundleID ? wq_app_icon(item.bundleID) : item.thumbnail;
+    if (image) image = [image imageByPreparingThumbnailOfSize:CGSizeMake(72, 72)] ?: image;
+    else image = [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")
+                   withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:42 weight:UIImageSymbolWeightRegular]];
+    NSString *title = item.label ?: item.name;
+    NSString *subtitle = item.isDir ? @"Folder" : wq_size_text(item.size);
+    NSDictionary *titleAttributes = @{NSFontAttributeName: IPFont(14, UIFontWeightSemibold),
+                                       NSForegroundColorAttributeName: IPPrimaryText()};
+    NSDictionary *subtitleAttributes = @{NSFontAttributeName: IPFont(11, UIFontWeightRegular),
+                                          NSForegroundColorAttributeName: IPSecondaryText()};
+    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+    configuration.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:titleAttributes];
+    configuration.attributedSubtitle = [[NSAttributedString alloc] initWithString:subtitle attributes:subtitleAttributes];
+    configuration.image = image;
+    configuration.imagePlacement = NSDirectionalRectEdgeTop;
+    configuration.imagePadding = 9;
+    configuration.titlePadding = 3;
+    configuration.titleAlignment = UIButtonConfigurationTitleAlignmentCenter;
+    configuration.baseForegroundColor = IPAccent();
+    configuration.baseBackgroundColor = IPSurface();
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleLarge;
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(12, 8, 10, 8);
+    button.configuration = configuration;
+    button.accessibilityLabel = title;
+    button.accessibilityHint = item.isDir ? @"Opens folder. Long press for more actions." : @"Opens file. Long press for more actions.";
+}
+
+- (void)openButton:(UIButton *)button { if (self.openSlot) self.openSlot((NSUInteger)button.tag); }
+@end
 
 @implementation WQDirViewController {
     NSString *_path;
@@ -741,6 +897,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     NSTimeInterval _lastReloadFinished;
     WQFolderSortKey _sortKey;
     BOOL _sortAscending;
+    BOOL _gridView;
 }
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
@@ -751,6 +908,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
         _baseTitle = self.title;
         _sortKey = WQFolderSortDefault;
         _sortAscending = YES;
+        _gridView = [NSUserDefaults.standardUserDefaults boolForKey:WQFolderGridViewKey];
         _selectedBackups = [NSMutableSet new];
         // Container parents: show bundle/group identifiers instead of UUIDs.
         NSString *parent = path.lastPathComponent;
@@ -864,7 +1022,32 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
                                    children:sortActions];
     UIMenu *directionGroup = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                             options:UIMenuOptionsDisplayInline children:@[direction]];
-    return [UIMenu menuWithTitle:@"Sort by" children:@[choices, directionGroup]];
+    UIAction *list = [UIAction actionWithTitle:@"List" image:[UIImage systemImageNamed:@"list.bullet"]
+                                     identifier:nil handler:^(__kindof UIAction *__unused sender) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (self) [self setGridView:NO];
+    }];
+    list.state = !_gridView ? UIMenuElementStateOn : UIMenuElementStateOff;
+    UIAction *grid = [UIAction actionWithTitle:@"Grid" image:[UIImage systemImageNamed:@"square.grid.2x2"]
+                                     identifier:nil handler:^(__kindof UIAction *__unused sender) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (self) [self setGridView:YES];
+    }];
+    grid.state = _gridView ? UIMenuElementStateOn : UIMenuElementStateOff;
+    if (_selectingBackups) grid.attributes = UIMenuElementAttributesDisabled;
+    UIMenu *viewGroup = [UIMenu menuWithTitle:@"View" image:nil identifier:nil
+                                      options:UIMenuOptionsDisplayInline | UIMenuOptionsSingleSelection
+                                     children:@[list, grid]];
+    return [UIMenu menuWithTitle:@"Sort and View" children:@[viewGroup, choices, directionGroup]];
+}
+
+- (void)setGridView:(BOOL)grid
+{
+    if (_gridView == grid) return;
+    _gridView = grid;
+    [NSUserDefaults.standardUserDefaults setBool:grid forKey:WQFolderGridViewKey];
+    _sortItem.menu = [self sortMenu];
+    [self.tableView reloadData];
 }
 
 - (UIMenu *)browserMenu
@@ -1148,6 +1331,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
         wq_alert(self, @"Nothing to select", @"Only complete backup folders can be selected here.");
         return;
     }
+    if (_gridView) [self setGridView:NO];
     _selectingBackups = YES;
     [_selectedBackups removeAllObjects];
     if (!_doneItem) {
@@ -1410,13 +1594,107 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     });
 }
 
+- (void)requestThumbnailForItem:(WQItem *)item
+{
+    if (item.isDir || !item.isRegular || item.thumbnail || item.thumbnailRequested) return;
+    static NSSet<NSString *> *thumbnailExtensions;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        thumbnailExtensions = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif",
+            @"tif", @"tiff", @"bmp", @"webp", @"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
+    });
+    if (![thumbnailExtensions containsObject:item.path.pathExtension.lowercaseString]) return;
+    item.thumbnailRequested = YES;
+    NSString *requestedPath = item.path.copy;
+    __weak typeof(self) weakSelf = self;
+    wq_file_thumbnail(requestedPath, CGSizeMake(120, 120), ^(UIImage *image) {
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf || !image) return;
+        NSUInteger itemIndex = [strongSelf->_items indexOfObjectPassingTest:^BOOL(WQItem *candidate, NSUInteger __unused idx, BOOL *__unused stop) {
+            return [candidate.path isEqualToString:requestedPath];
+        }];
+        if (itemIndex == NSNotFound) return;
+        strongSelf->_items[itemIndex].thumbnail = image;
+        NSUInteger row = strongSelf->_gridView ? itemIndex / 2 : itemIndex;
+        NSIndexPath *current = [NSIndexPath indexPathForRow:(NSInteger)row inSection:0];
+        if ([[strongSelf.tableView indexPathsForVisibleRows] containsObject:current])
+            [strongSelf.tableView reloadRowsAtIndexPaths:@[current] withRowAnimation:UITableViewRowAnimationNone];
+    });
+}
+
+- (UIMenu *)gridMenuForItem:(WQItem *)item
+{
+    NSString *path = item.path.copy;
+    NSString *name = (item.label ?: item.name).copy;
+    BOOL directory = item.isDir;
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray new];
+    if (directory) {
+        BOOL starred = wq_location_is_starred(path);
+        [actions addObject:[UIAction actionWithTitle:starred ? @"Remove from Starred" : @"Add to Starred"
+                                               image:[UIImage systemImageNamed:starred ? @"star.slash" : @"star"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            wq_set_location_starred(path, name, !starred);
+        }]];
+    }
+    [actions addObject:[UIAction actionWithTitle:@"Share" image:[UIImage systemImageNamed:@"square.and.arrow.up"]
+                                      identifier:nil handler:^(UIAction *__unused action) {
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (directory) wq_share_folder(strongSelf, path, nil, nil);
+        else wq_share(strongSelf, path, nil);
+    }]];
+    [actions addObject:[UIAction actionWithTitle:@"Copy to Transfer Shelf" image:[UIImage systemImageNamed:@"doc.on.clipboard"]
+                                      identifier:nil handler:^(UIAction *__unused action) {
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        WQItem *latest = [strongSelf->_items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQItem *candidate, NSDictionary *__unused bindings) {
+            return [candidate.path isEqualToString:path];
+        }]].firstObject;
+        if (latest) [strongSelf copyItemToTransferShelf:latest];
+    }]];
+    [actions addObject:[UIAction actionWithTitle:@"Info" image:[UIImage systemImageNamed:@"info.circle"]
+                                      identifier:nil handler:^(UIAction *__unused action) {
+        WQDirViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        WQItem *latest = [strongSelf->_items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQItem *candidate, NSDictionary *__unused bindings) {
+            return [candidate.path isEqualToString:path];
+        }]].firstObject;
+        if (latest) [strongSelf showInfoForItem:latest];
+    }]];
+    return [UIMenu menuWithChildren:actions];
+}
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return (_error || _scanInFlight || _items.count == 0) ? 1 : (NSInteger)_items.count;
+    if (_error || _scanInFlight || _items.count == 0) return 1;
+    return _gridView ? (NSInteger)((_items.count + 1) / 2) : (NSInteger)_items.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (_gridView && !_error && !_scanInFlight && _items.count > 0) {
+        WQGridCell *gridCell = [tableView dequeueReusableCellWithIdentifier:@"grid"]
+            ?: [[WQGridCell alloc] initWithReuseIdentifier:@"grid"];
+        NSUInteger first = (NSUInteger)indexPath.row * 2;
+        for (NSUInteger slot = 0; slot < 2; slot++) {
+            NSUInteger itemIndex = first + slot;
+            WQItem *item = itemIndex < _items.count ? _items[itemIndex] : nil;
+            UIMenu *menu = item ? [self gridMenuForItem:item] : nil;
+            if (item) {
+                [self requestThumbnailForItem:item];
+            }
+            [gridCell configureSlot:slot item:item menu:menu];
+        }
+        __weak typeof(self) weakSelf = self;
+        gridCell.openSlot = ^(NSUInteger slot) {
+            WQDirViewController *strongSelf = weakSelf;
+            NSUInteger itemIndex = first + slot;
+            if (strongSelf && itemIndex < strongSelf->_items.count)
+                [strongSelf openItem:strongSelf->_items[itemIndex]];
+        };
+        return gridCell;
+    }
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"item"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"item"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
@@ -1464,8 +1742,10 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     c.textProperties.color = IPPrimaryText();
     c.secondaryTextProperties.color = IPSecondaryText();
     UIImage *appIcon = item.bundleID ? wq_app_icon(item.bundleID) : nil;
-    c.image = appIcon ?: [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")];
-    if (appIcon) c.imageProperties.maximumSize = CGSizeMake(36, 36);
+    UIImage *preview = item.thumbnail;
+    c.image = appIcon ?: preview ?: [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")];
+    c.imageProperties.maximumSize = (appIcon || preview) ? CGSizeMake(46, 46) : CGSizeMake(26, 26);
+    if (preview) c.imageProperties.cornerRadius = 6;
     cell.contentConfiguration = c;
     IPStyleCell(cell);
     if (_selectingBackups) {
@@ -1477,11 +1757,19 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
         cell.accessoryType = item.isDir ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
+    [self requestThumbnailForItem:item];
     return cell;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (_gridView && !_error && !_scanInFlight && _items.count > 0) return 184;
+    return UITableViewAutomaticDimension;
 }
 
 - (NSIndexPath *)tableView:(UITableView *)tableView willSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (_gridView) return nil;
     if (_error || indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
     if (!_selectingBackups) return indexPath;
     WQItem *item = _items[(NSUInteger)indexPath.row];
@@ -1503,6 +1791,11 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     if (_error) return;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return;
     WQItem *item = _items[(NSUInteger)indexPath.row];
+    [self openItem:item];
+}
+
+- (void)openItem:(WQItem *)item
+{
     UIViewController *next;
     if (item.isLink) {
         wq_alert(self, @"Symbolic link",
@@ -1541,7 +1834,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
 // long-press menu (files are backed up first; backups only as whole units).
 - (UISwipeActionsConfiguration *)deleteSwipeForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (_selectingBackups || _error) return nil;
+    if (_gridView || _selectingBackups || _error) return nil;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
     WQItem *item = _items[(NSUInteger)indexPath.row];
     BOOL backupUnit = item.isDir && wq_backup_unit_deletable(item.path);

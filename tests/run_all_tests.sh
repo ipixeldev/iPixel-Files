@@ -64,7 +64,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
         exit 1
     }
     xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
-        -framework AVFoundation -framework AVKit -lsqlite3 -larchive \
+        -framework AVFoundation -framework AVKit -framework QuickLookThumbnailing -lsqlite3 -larchive \
         "${SOURCES[@]}" -o "$OUT/WQFiles-link-check" > "$OUT/ios-link.log" 2>&1 || {
         cat "$OUT/ios-link.log" >&2
         exit 1

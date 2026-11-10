@@ -8,13 +8,14 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.4 adds native media playback, safe archive browsing/extraction, read-only SQLite browsing and aligned container cards. Version 1.3 added explicit folder states, persistent starred locations, reliable icon fallbacks and a disciplined Pixel type scale.
+Version 1.5 adds asynchronous image/video thumbnails, persistent list/grid folder views and a full-screen media player that dismisses with a natural downward swipe. Version 1.4 added native media playback, safe archive browsing/extraction, read-only SQLite browsing and aligned container cards.
 
 ## iPixel-Files highlights
 
 - Complete **iPixel Blue**, **iPixel Lime** and optional **iPixel Pixel** visual systems.
 - Automatic blue or yellow/lime app icon and matching animated folder stacks.
 - File sorting by default order, name, date, type or size in either direction.
+- Persistent List and two-column Grid views, with larger icons and media thumbnails in Grid.
 - Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
 - Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
 - Persistent starred folders with quick access from Home.
@@ -23,7 +24,7 @@ Version 1.4 adds native media playback, safe archive browsing/extraction, read-o
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.
 - Text, image, property-list and hex viewing/editing tools.
-- Native video/audio playback, safe ZIP/TAR browsing and extraction, and read-only SQLite table browsing.
+- Image/video thumbnails, full-screen video/audio playback with swipe-down dismissal, safe ZIP/TAR browsing and extraction, and read-only SQLite table browsing.
 - Safety backups and verification before destructive file operations.
 - Original pixel-art icon and iPhone/iPad icon renditions.
 

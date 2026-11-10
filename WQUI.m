@@ -5,6 +5,7 @@
 //
 
 #import "WQUI.h"
+#import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "IPTheme.h"
@@ -471,6 +472,37 @@ UIImage *wq_app_icon(NSString *bundleID)
     UIImage *icon = raw ? wq_round_icon(raw) : wq_service_tile(bundleID);
     if (raw || background) [cache setObject:icon forKey:bundleID];
     return icon;
+}
+
+void wq_file_thumbnail(NSString *path, CGSize size, void (^completion)(UIImage *image))
+{
+    if (!path.length || !completion) return;
+    static NSCache<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 160;
+    });
+    UIImage *cached = [cache objectForKey:path];
+    if (cached) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
+        return;
+    }
+    dispatch_async(wq_io(), ^{
+        (void)wq_grant(path.stringByDeletingLastPathComponent);
+        (void)wq_grant(path);
+        QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc]
+            initWithFileAtURL:[NSURL fileURLWithPath:path]
+                         size:size
+                        scale:3.0
+          representationTypes:QLThumbnailGenerationRequestRepresentationTypeThumbnail];
+        [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
+            completionHandler:^(QLThumbnailRepresentation *representation, NSError *__unused error) {
+                UIImage *image = representation.UIImage;
+                if (image) [cache setObject:image forKey:path];
+                dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
+            }];
+    });
 }
 
 dispatch_queue_t wq_io(void)
