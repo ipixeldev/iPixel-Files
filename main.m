@@ -496,34 +496,31 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     pan.delegate = self;
     pan.cancelsTouchesInView = NO;
     [self.view addGestureRecognizer:pan];
-
-    UIButton *close = [self overlayButtonWithSymbol:@"xmark" action:@selector(closeMedia)];
-    UIButton *share = [self overlayButtonWithSymbol:@"square.and.arrow.up" action:@selector(shareMedia)];
-    [self.view addSubview:close];
-    [self.view addSubview:share];
-    [NSLayoutConstraint activateConstraints:@[
-        [close.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
-        [close.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [share.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
-        [share.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12]
-    ]];
-}
-
-- (UIButton *)overlayButtonWithSymbol:(NSString *)symbol action:(SEL)action
-{
-    UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
-    configuration.image = [UIImage systemImageNamed:symbol];
-    configuration.baseForegroundColor = UIColor.whiteColor;
-    configuration.baseBackgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.55];
-    configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:44],
-        [button.heightAnchor constraintEqualToConstant:44]
-    ]];
-    return button;
+    NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
+    if ([audio containsObject:_path.pathExtension.lowercaseString]) {
+        (void)[AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+        UIImageView *art = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"waveform.circle.fill"]];
+        art.tintColor = UIColor.systemCyanColor;
+        art.contentMode = UIViewContentModeScaleAspectFit;
+        art.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentOverlayView addSubview:art];
+        UILabel *name = [UILabel new];
+        name.text = _path.lastPathComponent;
+        name.textColor = UIColor.whiteColor;
+        name.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        name.textAlignment = NSTextAlignmentCenter;
+        name.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        name.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentOverlayView addSubview:name];
+        [NSLayoutConstraint activateConstraints:@[
+            [art.centerXAnchor constraintEqualToAnchor:self.contentOverlayView.centerXAnchor],
+            [art.centerYAnchor constraintEqualToAnchor:self.contentOverlayView.centerYAnchor constant:-44],
+            [art.widthAnchor constraintEqualToConstant:112], [art.heightAnchor constraintEqualToConstant:112],
+            [name.topAnchor constraintEqualToAnchor:art.bottomAnchor constant:18],
+            [name.leadingAnchor constraintEqualToAnchor:self.contentOverlayView.leadingAnchor constant:28],
+            [name.trailingAnchor constraintEqualToAnchor:self.contentOverlayView.trailingAnchor constant:-28]
+        ]];
+    }
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
@@ -578,8 +575,6 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     [self.player pause];
 }
 
-- (void)shareMedia { wq_share(self, _path, nil); }
-- (void)closeMedia { [self dismissViewControllerAnimated:YES completion:nil]; }
 @end
 
 @interface WQArchiveViewController : UITableViewController
@@ -773,6 +768,93 @@ static NSString *wq_folder_date_text(NSDate *date)
     return date ? [formatter stringFromDate:date] : @"";
 }
 
+static NSSet<NSString *> *wq_video_extensions(void)
+{
+    static NSSet *extensions; static dispatch_once_t once;
+    dispatch_once(&once, ^{ extensions = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]]; });
+    return extensions;
+}
+
+static NSSet<NSString *> *wq_image_extensions(void)
+{
+    static NSSet *extensions; static dispatch_once_t once;
+    dispatch_once(&once, ^{ extensions = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"tif", @"tiff", @"bmp", @"webp"]]; });
+    return extensions;
+}
+
+static NSSet<NSString *> *wq_audio_extensions(void)
+{
+    static NSSet *extensions; static dispatch_once_t once;
+    dispatch_once(&once, ^{ extensions = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]]; });
+    return extensions;
+}
+
+static NSString *wq_media_kind(NSString *path)
+{
+    NSString *extension = path.pathExtension.lowercaseString;
+    if ([wq_video_extensions() containsObject:extension]) return @"Video";
+    if ([wq_image_extensions() containsObject:extension]) return @"Photo";
+    if ([wq_audio_extensions() containsObject:extension]) return @"Audio";
+    return nil;
+}
+
+static NSString *wq_compact_file_name(WQItem *item, NSUInteger limit)
+{
+    NSString *name = item.label ?: item.name;
+    if (item.isDir || item.label || name.length <= limit) return name;
+    NSString *kind = wq_media_kind(item.path);
+    if (kind) {
+        NSString *stem = item.name.stringByDeletingPathExtension;
+        NSArray *parts = [stem componentsSeparatedByCharactersInSet:
+            [NSCharacterSet characterSetWithCharactersInString:@":_-"]];
+        NSString *identifier = nil;
+        NSCharacterSet *nonDigits = NSCharacterSet.decimalDigitCharacterSet.invertedSet;
+        for (NSString *part in parts.reverseObjectEnumerator) {
+            if (part.length > 0 && part.length <= 7 && [part rangeOfCharacterFromSet:nonDigits].location == NSNotFound && part.integerValue > 0) {
+                identifier = part; break;
+            }
+        }
+        return identifier ? [NSString stringWithFormat:@"%@ %@", kind, identifier] : kind;
+    }
+    NSString *extension = item.name.pathExtension;
+    NSString *stem = item.name.stringByDeletingPathExtension;
+    NSUInteger room = limit - MIN(limit / 3, extension.length + 2);
+    if (stem.length > room && room > 8)
+        stem = [NSString stringWithFormat:@"%@…%@", [stem substringToIndex:room - 6], [stem substringFromIndex:stem.length - 5]];
+    return extension.length ? [NSString stringWithFormat:@"%@.%@", stem, extension] : stem;
+}
+
+static NSString *wq_file_type_detail(WQItem *item)
+{
+    NSString *kind = wq_media_kind(item.path);
+    NSString *extension = item.path.pathExtension.uppercaseString;
+    if (kind) return extension.length ? [NSString stringWithFormat:@"%@ · %@", kind, extension] : kind;
+    return extension.length ? extension : @"File";
+}
+
+static UIImage *wq_file_symbol(WQItem *item, CGFloat size)
+{
+    NSString *kind = wq_media_kind(item.path);
+    NSString *symbol = item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc");
+    if ([kind isEqualToString:@"Video"]) symbol = @"video.fill";
+    else if ([kind isEqualToString:@"Photo"]) symbol = @"photo.fill";
+    else if ([kind isEqualToString:@"Audio"]) symbol = @"waveform";
+    return [UIImage systemImageNamed:symbol withConfiguration:
+        [UIImageSymbolConfiguration configurationWithPointSize:size weight:UIImageSymbolWeightRegular]];
+}
+
+static UIImage *wq_grid_tile_image(UIImage *source)
+{
+    if (!source) return nil;
+    CGSize canvas = CGSizeMake(78, 78);
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = 2;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:canvas format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *__unused context) {
+        [source drawInRect:(CGRect){CGPointZero, canvas}];
+    }];
+}
+
 typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     WQFolderSortDefault = 0,
     WQFolderSortName,
@@ -805,6 +887,9 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
             button.tag = (NSInteger)slot;
             button.showsMenuAsPrimaryAction = NO;
             button.imageView.contentMode = UIViewContentModeScaleAspectFit;
+            button.titleLabel.numberOfLines = 2;
+            button.titleLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+            button.titleLabel.textAlignment = NSTextAlignmentCenter;
             [button addTarget:self action:@selector(openButton:) forControlEvents:UIControlEventTouchUpInside];
             [buttons addObject:button];
         }
@@ -832,11 +917,10 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     button.menu = menu;
     if (!item) return;
     UIImage *image = item.bundleID ? wq_app_icon(item.bundleID) : item.thumbnail;
-    if (image) image = [image imageByPreparingThumbnailOfSize:CGSizeMake(72, 72)] ?: image;
-    else image = [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")
-                   withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:42 weight:UIImageSymbolWeightRegular]];
-    NSString *title = item.label ?: item.name;
-    NSString *subtitle = item.isDir ? @"Folder" : wq_size_text(item.size);
+    if (image) image = wq_grid_tile_image(image);
+    else image = wq_file_symbol(item, 52);
+    NSString *title = wq_compact_file_name(item, 25);
+    NSString *subtitle = item.isDir ? @"Folder" : [NSString stringWithFormat:@"%@ · %@", wq_file_type_detail(item), wq_size_text(item.size)];
     NSDictionary *titleAttributes = @{NSFontAttributeName: IPFont(14, UIFontWeightSemibold),
                                        NSForegroundColorAttributeName: IPPrimaryText()};
     NSDictionary *subtitleAttributes = @{NSFontAttributeName: IPFont(11, UIFontWeightRegular),
@@ -881,13 +965,18 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     BOOL _backupManager;
     BOOL _backupStorage;
     BOOL _selectingBackups;
+    BOOL _selectingFiles;
     NSMutableSet<NSString *> *_selectedBackups;
+    NSMutableSet<NSString *> *_selectedFiles;
     UIBarButtonItem *_selectItem;
     UIBarButtonItem *_sortItem;
     UIBarButtonItem *_menuItem;
     UIBarButtonItem *_starItem;
     UIBarButtonItem *_doneItem;
     UIBarButtonItem *_deleteItem;
+    UIBarButtonItem *_shareItem;
+    UIBarButtonItem *_fileDoneItem;
+    UIBarButtonItem *_fileAllItem;
     UIBarButtonItem *_allItem;
     NSString *_baseTitle;
     WQScanCancellation *_scanCancellation;
@@ -910,6 +999,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
         _sortAscending = YES;
         _gridView = [NSUserDefaults.standardUserDefaults boolForKey:WQFolderGridViewKey];
         _selectedBackups = [NSMutableSet new];
+        _selectedFiles = [NSMutableSet new];
         // Container parents: show bundle/group identifiers instead of UUIDs.
         NSString *parent = path.lastPathComponent;
         _labels = [@[@"Application", @"AppGroup", @"PluginKitPlugin", @"InternalDaemon", @"System"] containsObject:parent];
@@ -927,6 +1017,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 {
     [super viewDidLoad];
     self.refreshControl = [UIRefreshControl new];
+    self.tableView.separatorStyle = _gridView ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     _sortItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.arrow.down.circle"]
                                                  menu:[self sortMenu]];
@@ -1034,7 +1125,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
         if (self) [self setGridView:YES];
     }];
     grid.state = _gridView ? UIMenuElementStateOn : UIMenuElementStateOff;
-    if (_selectingBackups) grid.attributes = UIMenuElementAttributesDisabled;
+    if (_selectingFiles || _selectingBackups) grid.attributes = UIMenuElementAttributesDisabled;
     UIMenu *viewGroup = [UIMenu menuWithTitle:@"View" image:nil identifier:nil
                                       options:UIMenuOptionsDisplayInline | UIMenuOptionsSingleSelection
                                      children:@[list, grid]];
@@ -1046,6 +1137,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     if (_gridView == grid) return;
     _gridView = grid;
     [NSUserDefaults.standardUserDefaults setBool:grid forKey:WQFolderGridViewKey];
+    self.tableView.separatorStyle = grid ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
     _sortItem.menu = [self sortMenu];
     [self.tableView reloadData];
 }
@@ -1054,6 +1146,10 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 {
     __weak typeof(self) weakSelf = self;
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
+    UIAction *selectFiles = [UIAction actionWithTitle:@"Select Files" image:[UIImage systemImageNamed:@"checkmark.circle"]
+                                            identifier:nil handler:^(UIAction *__unused action) { [weakSelf enterFileSelection]; }];
+    if (_selectingFiles || _selectingBackups) selectFiles.attributes = UIMenuElementAttributesDisabled;
+    [items addObject:selectFiles];
     NSString *pasteTitle = gTransferShelfPath.length
         ? [NSString stringWithFormat:@"Paste %@ Here", gTransferShelfPath.lastPathComponent]
         : @"Paste from Transfer Shelf";
@@ -1162,6 +1258,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
+    if (_selectingFiles) [self exitFileSelection];
     if (_selectingBackups) [self exitBackupSelection];
     if (_scanInFlight) {
         _scanNeedsRefresh = YES;
@@ -1302,6 +1399,84 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
             if ([field rangeOfString:q options:opts].location != NSNotFound) return YES;
         return NO;
     }]];
+}
+
+#pragma mark File multi-selection
+
+- (NSArray<NSString *> *)selectableFilePaths
+{
+    NSMutableArray<NSString *> *paths = [NSMutableArray new];
+    for (WQItem *item in _items)
+        if (item.isRegular && !item.isLink) [paths addObject:item.path];
+    return paths;
+}
+
+- (void)updateFileSelectionBar
+{
+    _shareItem.enabled = _selectedFiles.count > 0;
+    _fileAllItem.enabled = _selectedFiles.count < [self selectableFilePaths].count;
+    self.title = _selectedFiles.count
+        ? [NSString stringWithFormat:@"%lu Selected", (unsigned long)_selectedFiles.count] : @"Select Files";
+}
+
+- (void)enterFileSelection
+{
+    if ([self selectableFilePaths].count == 0) {
+        wq_alert(self, @"No files to select", @"This folder does not contain regular files that can be shared.");
+        return;
+    }
+    if (_gridView) [self setGridView:NO];
+    _selectingFiles = YES;
+    [_selectedFiles removeAllObjects];
+    _fileDoneItem = [[UIBarButtonItem alloc] initWithTitle:@"Done" style:UIBarButtonItemStyleProminent
+                                                target:self action:@selector(exitFileSelection)];
+    _shareItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
+                                                 style:UIBarButtonItemStyleProminent target:self action:@selector(shareSelectedFiles)];
+    _shareItem.accessibilityLabel = @"Share or Save Selected Files";
+    _fileAllItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]
+                                               style:UIBarButtonItemStylePlain target:self action:@selector(selectAllFiles)];
+    _fileAllItem.accessibilityLabel = @"Select All Files";
+    self.refreshControl.enabled = NO;
+    self.tableView.allowsMultipleSelection = YES;
+    self.navigationItem.rightBarButtonItems = @[_shareItem, _fileAllItem, _fileDoneItem];
+    [self updateFileSelectionBar];
+    [self.tableView reloadData];
+}
+
+- (void)exitFileSelection
+{
+    if (!_selectingFiles) return;
+    _selectingFiles = NO;
+    [_selectedFiles removeAllObjects];
+    self.tableView.allowsMultipleSelection = NO;
+    self.refreshControl.enabled = YES;
+    self.title = _baseTitle;
+    self.navigationItem.rightBarButtonItems = _backupStorage
+        ? @[_selectItem, _starItem, _sortItem, _menuItem] : @[_starItem, _sortItem, _menuItem];
+    _sortItem.menu = [self sortMenu];
+    _menuItem.menu = [self browserMenu];
+    [self.tableView reloadData];
+}
+
+- (void)selectAllFiles
+{
+    [_selectedFiles addObjectsFromArray:[self selectableFilePaths]];
+    for (NSUInteger row = 0; row < _items.count; row++) {
+        WQItem *item = _items[row];
+        if (item.isRegular && !item.isLink)
+            [self.tableView selectRowAtIndexPath:[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]
+                                        animated:NO scrollPosition:UITableViewScrollPositionNone];
+    }
+    [self updateFileSelectionBar];
+    [self.tableView reloadData];
+}
+
+- (void)shareSelectedFiles
+{
+    NSArray<NSString *> *paths = _selectedFiles.allObjects;
+    if (paths.count == 0) return;
+    [self exitFileSelection];
+    wq_share_files(self, paths, nil);
 }
 
 #pragma mark Backup multi-selection
@@ -1600,8 +1775,8 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     static NSSet<NSString *> *thumbnailExtensions;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        thumbnailExtensions = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif",
-            @"tif", @"tiff", @"bmp", @"webp", @"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
+        thumbnailExtensions = [wq_image_extensions() setByAddingObjectsFromSet:
+            [wq_video_extensions() setByAddingObjectsFromSet:wq_audio_extensions()]];
     });
     if (![thumbnailExtensions containsObject:item.path.pathExtension.lowercaseString]) return;
     item.thumbnailRequested = YES;
@@ -1733,22 +1908,32 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
         return cell;
     }
     WQItem *item = _items[(NSUInteger)indexPath.row];
-    c.text = item.label ?: item.name;
+    c.text = wq_compact_file_name(item, 38);
     NSString *date = wq_folder_date_text(item.modified);
-    NSString *detail = item.isDir ? date : [NSString stringWithFormat:@"%@ · %@", wq_size_text(item.size), date];
+    NSString *detail = item.isDir ? date : [NSString stringWithFormat:@"%@ · %@ · %@",
+        wq_file_type_detail(item), wq_size_text(item.size), date];
     if (item.label) detail = [NSString stringWithFormat:@"%@\n%@", item.name, detail];
     if (item.isLink) detail = [@"symlink · " stringByAppendingString:detail];
     c.secondaryText = detail;
     c.textProperties.color = IPPrimaryText();
+    c.textProperties.numberOfLines = 1;
+    c.textProperties.lineBreakMode = NSLineBreakByTruncatingMiddle;
     c.secondaryTextProperties.color = IPSecondaryText();
+    c.secondaryTextProperties.numberOfLines = item.label ? 2 : 1;
+    c.secondaryTextProperties.lineBreakMode = NSLineBreakByTruncatingMiddle;
     UIImage *appIcon = item.bundleID ? wq_app_icon(item.bundleID) : nil;
     UIImage *preview = item.thumbnail;
-    c.image = appIcon ?: preview ?: [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")];
-    c.imageProperties.maximumSize = (appIcon || preview) ? CGSizeMake(46, 46) : CGSizeMake(26, 26);
+    c.image = appIcon ?: preview ?: wq_file_symbol(item, 28);
+    c.imageProperties.maximumSize = (appIcon || preview) ? CGSizeMake(56, 56) : CGSizeMake(30, 30);
     if (preview) c.imageProperties.cornerRadius = 6;
     cell.contentConfiguration = c;
     IPStyleCell(cell);
-    if (_selectingBackups) {
+    if (_selectingFiles) {
+        BOOL selectable = item.isRegular && !item.isLink;
+        cell.accessoryType = selectable && [_selectedFiles containsObject:item.path]
+            ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        cell.selectionStyle = selectable ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+    } else if (_selectingBackups) {
         BOOL selectable = wq_backup_unit_deletable(item.path);
         cell.accessoryType = selectable && [_selectedBackups containsObject:item.path]
             ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
@@ -1763,7 +1948,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (_gridView && !_error && !_scanInFlight && _items.count > 0) return 184;
+    if (_gridView && !_error && !_scanInFlight && _items.count > 0) return 204;
     return UITableViewAutomaticDimension;
 }
 
@@ -1771,6 +1956,10 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 {
     if (_gridView) return nil;
     if (_error || indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
+    if (_selectingFiles) {
+        WQItem *item = _items[(NSUInteger)indexPath.row];
+        return item.isRegular && !item.isLink ? indexPath : nil;
+    }
     if (!_selectingBackups) return indexPath;
     WQItem *item = _items[(NSUInteger)indexPath.row];
     return wq_backup_unit_deletable(item.path) ? indexPath : nil;
@@ -1778,6 +1967,15 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (_selectingFiles) {
+        if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return;
+        WQItem *selected = _items[(NSUInteger)indexPath.row];
+        if (!selected.isRegular || selected.isLink) return;
+        [_selectedFiles addObject:selected.path];
+        [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        [self updateFileSelectionBar];
+        return;
+    }
     if (_selectingBackups) {
         if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return;
         WQItem *selected = _items[(NSUInteger)indexPath.row];
@@ -1822,6 +2020,14 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 
 - (void)tableView:(UITableView *)tableView didDeselectRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (_selectingFiles) {
+        if (indexPath.section == 0 && (NSUInteger)indexPath.row < _items.count) {
+            [_selectedFiles removeObject:_items[(NSUInteger)indexPath.row].path];
+            [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+            [self updateFileSelectionBar];
+        }
+        return;
+    }
     if (!_selectingBackups) return;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return;
     WQItem *item = _items[(NSUInteger)indexPath.row];
@@ -1834,7 +2040,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 // long-press menu (files are backed up first; backups only as whole units).
 - (UISwipeActionsConfiguration *)deleteSwipeForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (_gridView || _selectingBackups || _error) return nil;
+    if (_gridView || _selectingFiles || _selectingBackups || _error) return nil;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
     WQItem *item = _items[(NSUInteger)indexPath.row];
     BOOL backupUnit = item.isDir && wq_backup_unit_deletable(item.path);
@@ -1876,7 +2082,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point
 {
-    if (_selectingBackups || _error) return nil;
+    if (_selectingFiles || _selectingBackups || _error) return nil;
     if (indexPath.section != 0 || (NSUInteger)indexPath.row >= _items.count) return nil;
     WQItem *item = _items[(NSUInteger)indexPath.row];
     NSString *itemPath = [item.path copy];

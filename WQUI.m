@@ -499,6 +499,35 @@ void wq_file_thumbnail(NSString *path, CGSize size, void (^completion)(UIImage *
         [QLThumbnailGenerator.sharedGenerator generateBestRepresentationForRequest:request
             completionHandler:^(QLThumbnailRepresentation *representation, NSError *__unused error) {
                 UIImage *image = representation.UIImage;
+                if (image) {
+                    NSString *extension = path.pathExtension.lowercaseString;
+                    NSSet *videos = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"avi", @"mpeg", @"mpg"]];
+                    NSSet *images = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"tif", @"tiff", @"bmp", @"webp"]];
+                    NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
+                    NSString *symbol = [videos containsObject:extension] ? @"play.fill" :
+                        ([images containsObject:extension] ? @"photo.fill" : ([audio containsObject:extension] ? @"waveform" : nil));
+                    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+                    format.scale = 2;
+                    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+                    image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *__unused context) {
+                        CGFloat scale = MAX(size.width / image.size.width, size.height / image.size.height);
+                        CGSize drawn = CGSizeMake(image.size.width * scale, image.size.height * scale);
+                        CGRect rect = CGRectMake((size.width - drawn.width) / 2, (size.height - drawn.height) / 2, drawn.width, drawn.height);
+                        [[UIBezierPath bezierPathWithRoundedRect:(CGRect){CGPointZero, size} cornerRadius:12] addClip];
+                        [image drawInRect:rect];
+                        if (symbol) {
+                            CGFloat badge = MIN(size.width, size.height) * 0.29;
+                            CGRect badgeRect = CGRectMake(size.width - badge - 7, size.height - badge - 7, badge, badge);
+                            [[UIColor.blackColor colorWithAlphaComponent:0.72] setFill];
+                            [[UIBezierPath bezierPathWithOvalInRect:badgeRect] fill];
+                            UIImage *icon = [[UIImage systemImageNamed:symbol withConfiguration:
+                                [UIImageSymbolConfiguration configurationWithPointSize:badge * 0.46 weight:UIImageSymbolWeightBold]]
+                                imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
+                            [icon drawAtPoint:CGPointMake(CGRectGetMidX(badgeRect) - icon.size.width / 2,
+                                                         CGRectGetMidY(badgeRect) - icon.size.height / 2)];
+                        }
+                    }];
+                }
                 if (image) [cache setObject:image forKey:path];
                 dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
             }];

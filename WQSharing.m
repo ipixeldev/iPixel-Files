@@ -78,14 +78,16 @@ static void wq_clear_in_flight(UIViewController *host)
     objc_setAssociatedObject(host, &kWQShareInFlightKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static BOOL wq_present_share(UIViewController *host, NSString *file, NSString *exportDir, UIView *source)
+static BOOL wq_present_share_items(UIViewController *host, NSArray<NSString *> *files, NSString *exportDir, UIView *source)
 {
     if (!wq_share_host_is_active(host)) {
         wq_remove_export(exportDir);
         return NO;
     }
+    NSMutableArray<NSURL *> *URLs = [NSMutableArray new];
+    for (NSString *file in files) [URLs addObject:[NSURL fileURLWithPath:file]];
     UIActivityViewController *share = [[UIActivityViewController alloc]
-        initWithActivityItems:@[[NSURL fileURLWithPath:file]] applicationActivities:nil];
+        initWithActivityItems:URLs applicationActivities:nil];
     UIView *anchor = source.window ? source : host.view;
     share.popoverPresentationController.sourceView = anchor;
     share.popoverPresentationController.sourceRect = anchor.bounds;
@@ -98,6 +100,11 @@ static BOOL wq_present_share(UIViewController *host, NSString *file, NSString *e
         if (!share.presentingViewController) wq_remove_export(exportDir);
     }];
     return YES;
+}
+
+static BOOL wq_present_share(UIViewController *host, NSString *file, NSString *exportDir, UIView *source)
+{
+    return wq_present_share_items(host, @[file], exportDir, source);
 }
 
 // Cancel folder preparation when its browser is popped or otherwise abandoned.
@@ -152,6 +159,56 @@ void wq_share(UIViewController *host, NSString *path, UIView *source)
                 !wq_present_share(strongHost, tmp, outDir, source)) {
                 wq_remove_export(outDir);
             }
+            wq_clear_in_flight(strongHost);
+        });
+    });
+}
+
+void wq_share_files(UIViewController *host, NSArray<NSString *> *paths, UIView *source)
+{
+    if (!host || paths.count == 0) return;
+    if (wq_share_in_flight(host)) {
+        wq_alert(host, @"Share in progress", @"Wait for the current share to finish before starting another.");
+        return;
+    }
+    objc_setAssociatedObject(host, &kWQShareInFlightKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakHost = host;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *outDir = wq_unique_export_directory();
+        NSMutableArray<NSString *> *exports = [NSMutableArray new];
+        NSMutableSet<NSString *> *usedNames = [NSMutableSet new];
+        NSString *error = nil;
+        for (NSString *path in paths) {
+            if (!outDir || !wq_shareable_regular_file(path)) {
+                error = @"Only regular files can be shared together.";
+                break;
+            }
+            NSString *name = path.lastPathComponent.length ? path.lastPathComponent : @"File";
+            NSString *candidate = name;
+            NSUInteger suffix = 2;
+            while ([usedNames containsObject:candidate.lowercaseString]) {
+                NSString *stem = name.stringByDeletingPathExtension;
+                NSString *extension = name.pathExtension;
+                NSString *numbered = [NSString stringWithFormat:@"%@ %lu", stem, (unsigned long)suffix++];
+                candidate = extension.length ? [numbered stringByAppendingPathExtension:extension] : numbered;
+            }
+            [usedNames addObject:candidate.lowercaseString];
+            NSString *destination = [outDir stringByAppendingPathComponent:candidate];
+            if (!wq_copy_to_local(path, destination, &error)) break;
+            [exports addObject:destination];
+        }
+        BOOL ok = exports.count == paths.count;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController *strongHost = weakHost;
+            if (!ok) {
+                wq_remove_export(outDir);
+                wq_clear_in_flight(strongHost);
+                if (wq_share_host_is_active(strongHost))
+                    wq_alert(strongHost, @"Cannot share selected files", error ?: @"Could not prepare every selected file.");
+                return;
+            }
+            if (!wq_share_host_is_active(strongHost) ||
+                !wq_present_share_items(strongHost, exports, outDir, source)) wq_remove_export(outDir);
             wq_clear_in_flight(strongHost);
         });
     });

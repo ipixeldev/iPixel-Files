@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.5 adds asynchronous image/video thumbnails, persistent list/grid folder views and a full-screen media player that dismisses with a natural downward swipe. Version 1.4 added native media playback, safe archive browsing/extraction, read-only SQLite browsing and aligned container cards.
+Version 1.6 adds compact media names, fixed-size thumbnail cards, visible media-type badges and a dedicated audio presentation while removing duplicated player controls. Version 1.5 added asynchronous image/video thumbnails, persistent list/grid folder views and swipe-down media dismissal.
 
 ## iPixel-Files highlights
 
@@ -18,6 +18,7 @@ Version 1.5 adds asynchronous image/video thumbnails, persistent list/grid folde
 - Persistent List and two-column Grid views, with larger icons and media thumbnails in Grid.
 - Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
 - Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
+- Multi-select regular files and send them together to Share or Save to Files.
 - Persistent starred folders with quick access from Home.
 - Clear loading, loaded-empty, no-results and access-denied folder states.
 - System, Light and Dark appearance modes.
