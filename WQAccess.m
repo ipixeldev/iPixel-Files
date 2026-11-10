@@ -2257,6 +2257,43 @@ BOOL wq_copy_contents(NSString *srcDir, NSString *dstDir, NSString **errorText)
     return allOk;
 }
 
+BOOL wq_copy_item(NSString *source, NSString *destination, NSString **errorText)
+{
+    source = WQCanonicalVarPath(source);
+    destination = WQCanonicalVarPath(destination);
+    if (!WQAbsolutePathGrammar(source) || !WQAbsolutePathGrammar(destination) ||
+        [source isEqualToString:destination] ||
+        [destination hasPrefix:[source stringByAppendingString:@"/"]] ||
+        wq_is_backup_storage_path(destination)) {
+        if (errorText) *errorText = @"Source and destination overlap, are invalid, or target protected backup storage.";
+        return NO;
+    }
+    struct stat sourceStat = {0};
+    if (!wq_stat(source, &sourceStat)) {
+        if (errorText) *errorText = @"The transfer source no longer exists.";
+        return NO;
+    }
+    if (S_ISLNK(sourceStat.st_mode) || (!S_ISDIR(sourceStat.st_mode) && !S_ISREG(sourceStat.st_mode))) {
+        if (errorText) *errorText = @"Only regular files and folders can be copied; symbolic links are not followed.";
+        return NO;
+    }
+    if (S_ISDIR(sourceStat.st_mode)) return wq_copy_contents(source, destination, errorText);
+
+    struct stat destinationStat = {0};
+    BOOL exists = wq_stat(destination, &destinationStat);
+    if (exists && !S_ISREG(destinationStat.st_mode)) {
+        if (errorText) *errorText = @"A non-file item already exists at the destination.";
+        return NO;
+    }
+    BOOL ok = exists ? wq_write_from_file(destination, source, errorText)
+                     : wq_create_file_from(destination, source, errorText);
+    if (!ok && wq_grant(source.stringByDeletingLastPathComponent))
+        ok = exists ? wq_write_from_file(destination, source, errorText)
+                    : wq_create_file_from(destination, source, errorText);
+    wq_log(@"transfer copy: %@ -> %@: %@", source, destination, ok ? @"OK" : @"failed");
+    return ok;
+}
+
 // Container-manager enumeration is a second, permission-independent way to
 // map a container path to its identifier. The enumeration pattern is the one
 // used by terminal_worse (GPL-3.0); no part-domain traversal is involved. The UUID xattr and the root-only

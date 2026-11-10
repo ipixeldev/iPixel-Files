@@ -250,6 +250,21 @@ int main(void)
                   @"create_file_from succeeds when the source is stable");
             NSString *newDir = [base stringByAppendingPathComponent:@"new-dir"];
             check(wq_create_dir(newDir, &error) && [fm fileExistsAtPath:newDir], @"create_dir succeeds through a parent descriptor");
+            NSString *transferFile = [base stringByAppendingPathComponent:@"transfer-file"];
+            check(wq_copy_item(created, transferFile, &error) && has(transferFile, @"created"),
+                  @"transfer shelf copies a regular file");
+            put(transferFile, @"old destination");
+            check(wq_copy_item(created, transferFile, &error) && has(transferFile, @"created"),
+                  @"transfer shelf safely replaces an existing regular file");
+            NSString *transferSourceDir = [base stringByAppendingPathComponent:@"transfer-source-dir"];
+            NSString *transferDestDir = [base stringByAppendingPathComponent:@"transfer-dest-dir"];
+            check(wq_create_dir(transferSourceDir, &error), @"create transfer source folder");
+            put([transferSourceDir stringByAppendingPathComponent:@"inside"], @"tree bytes");
+            check(wq_copy_item(transferSourceDir, transferDestDir, &error) &&
+                  has([transferDestDir stringByAppendingPathComponent:@"inside"], @"tree bytes"),
+                  @"transfer shelf copies a directory tree");
+            check(!wq_copy_item(transferSourceDir, [transferSourceDir stringByAppendingPathComponent:@"nested"], &error),
+                  @"transfer shelf rejects overlapping trees");
             put([newDir stringByAppendingPathComponent:@"child"], @"child");
             check(!wq_delete(newDir, &error), @"non-empty folder delete refused");
             check(wq_delete([newDir stringByAppendingPathComponent:@"child"], &error) && wq_delete(newDir, &error),

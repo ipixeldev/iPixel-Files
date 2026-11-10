@@ -61,6 +61,16 @@ float wq_progress_from_text(NSString *text)
 - (void)drawRect:(CGRect)rect
 {
     CGFloat w = CGRectGetWidth(rect), h = CGRectGetHeight(rect);
+    if (IPPixelUIEnabled()) {
+        CGFloat px = MAX(2, floor(MIN(w, h) / 10.0));
+        CGRect body = CGRectMake(0, h * 0.30, w, h * 0.70);
+        CGRect tab = CGRectMake(px, h * 0.16, w * 0.38, h * 0.22);
+        [self.fillColor setFill];
+        UIRectFill(CGRectIntegral(body));
+        UIRectFill(CGRectIntegral(tab));
+        UIRectFill(CGRectMake(w * 0.38, h * 0.22, px * 2, px * 2));
+        return;
+    }
     CGFloat tabHeight = h * 0.22, radius = MIN(16, h * 0.16);
     UIBezierPath *path = [UIBezierPath bezierPath];
     [path moveToPoint:CGPointMake(radius, tabHeight)];
@@ -120,9 +130,16 @@ UIView *wq_folder_stack_view(CGSize size, BOOL animated)
         [container addSubview:folder];
         if (animated) {
             CAKeyframeAnimation *floatAnimation = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
-            floatAnimation.values = @[@0, @(-5 - (NSInteger)i), @0];
-            floatAnimation.keyTimes = @[@0, @0.5, @1];
-            floatAnimation.duration = 1.35;
+            if (IPPixelUIEnabled()) {
+                floatAnimation.values = @[@0, @(-4 - (NSInteger)i), @(-8 - (NSInteger)i), @(-4 - (NSInteger)i), @0];
+                floatAnimation.keyTimes = @[@0, @0.25, @0.5, @0.75, @1];
+                floatAnimation.calculationMode = kCAAnimationDiscrete;
+                floatAnimation.duration = 1.0;
+            } else {
+                floatAnimation.values = @[@0, @(-5 - (NSInteger)i), @0];
+                floatAnimation.keyTimes = @[@0, @0.5, @1];
+                floatAnimation.duration = 1.35;
+            }
             floatAnimation.beginTime = CACurrentMediaTime() + i * 0.10;
             floatAnimation.repeatCount = HUGE_VALF;
             floatAnimation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];

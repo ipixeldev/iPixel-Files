@@ -138,10 +138,11 @@ static inline UIColor *IPCardForeground(void) {
 
 static inline UIFont *IPFont(CGFloat size, UIFontWeight weight) {
     if (IPPixelUIEnabled()) {
-        NSString *name = weight >= UIFontWeightSemibold ? @"Menlo-Bold" : @"Menlo-Regular";
-        UIFont *pixel = [UIFont fontWithName:name size:size];
+        UIFont *pixel = [UIFont fontWithName:@"PressStart2P-Regular" size:MAX(8, size * 0.78)];
         if (pixel) return pixel;
-        return [UIFont monospacedSystemFontOfSize:size weight:weight];
+        NSString *name = weight >= UIFontWeightSemibold ? @"Menlo-Bold" : @"Menlo-Regular";
+        pixel = [UIFont fontWithName:name size:size];
+        return pixel ?: [UIFont monospacedSystemFontOfSize:size weight:weight];
     }
     UIFont *font = [UIFont systemFontOfSize:size weight:weight];
     UIFontDescriptor *rounded = [font.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];

@@ -503,6 +503,9 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     WQFolderSortSize,
 };
 
+static NSString *gTransferShelfPath;
+static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfDidChangeNotification";
+
 @implementation WQDirViewController {
     NSString *_path;
     NSArray<WQItem *> *_all;     // everything in the folder
@@ -591,7 +594,14 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(transferShelfDidChange:)
+        name:WQTransferShelfDidChangeNotification object:nil];
     [self reload];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (UIMenu *)sortMenu
@@ -637,6 +647,21 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
 {
     __weak typeof(self) weakSelf = self;
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
+    NSString *pasteTitle = gTransferShelfPath.length
+        ? [NSString stringWithFormat:@"Paste %@ Here", gTransferShelfPath.lastPathComponent]
+        : @"Paste from Transfer Shelf";
+    UIAction *paste = [UIAction actionWithTitle:pasteTitle image:[UIImage systemImageNamed:@"doc.on.clipboard"]
+                                      identifier:nil handler:^(UIAction *__unused a) { [weakSelf pasteTransferShelf]; }];
+    if (!gTransferShelfPath.length || self.readOnly || _backupStorage)
+        paste.attributes = UIMenuElementAttributesDisabled;
+    [items addObject:paste];
+    if (gTransferShelfPath.length) {
+        [items addObject:[UIAction actionWithTitle:@"Clear Transfer Shelf" image:[UIImage systemImageNamed:@"xmark.bin"]
+                                       identifier:nil handler:^(UIAction *__unused a) {
+            gTransferShelfPath = nil;
+            [NSNotificationCenter.defaultCenter postNotificationName:WQTransferShelfDidChangeNotification object:nil];
+        }]];
+    }
     if (!self.readOnly && !_backupStorage) {
         [items addObject:[UIAction actionWithTitle:@"New Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
                           handler:^(UIAction *__unused a) { [weakSelf promptNewFolder]; }]];
@@ -647,6 +672,45 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     [items addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
                       handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
     return [UIMenu menuWithChildren:items];
+}
+
+- (void)transferShelfDidChange:(NSNotification *)notification
+{
+    _menuItem.menu = [self browserMenu];
+}
+
+- (void)copyItemToTransferShelf:(WQItem *)item
+{
+    if (!item.path.length || item.isLink || (!item.isDir && !item.isRegular)) return;
+    gTransferShelfPath = [item.path copy];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQTransferShelfDidChangeNotification object:nil];
+    _scanStatus = [NSString stringWithFormat:@"%@ ready to paste", item.label ?: item.name];
+    [self updateHeader];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([self->_scanStatus hasSuffix:@"ready to paste"]) { self->_scanStatus = nil; [self updateHeader]; }
+    });
+}
+
+- (void)pasteTransferShelf
+{
+    NSString *source = [gTransferShelfPath copy];
+    if (!source.length || self.readOnly || _backupStorage) return;
+    NSString *destination = [_path stringByAppendingPathComponent:source.lastPathComponent];
+    void (^performCopy)(void) = ^{
+        [self runIO:^BOOL(NSString **error) { return wq_copy_item(source, destination, error); }
+              failure:@"Cannot copy item"];
+    };
+    struct stat existing = {0};
+    if (!wq_stat(destination, &existing)) { performCopy(); return; }
+    NSString *message = S_ISDIR(existing.st_mode)
+        ? @"A folder with this name already exists. Its contents will be merged and same-named items replaced safely."
+        : @"A file with this name already exists. Its previous contents will be saved in Backups before replacement.";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Replace existing item?"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault
+        handler:^(UIAlertAction *__unused action) { performCopy(); }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)applySortAndFilter
@@ -1330,6 +1394,20 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
                                   handler:^(UIAction *__unused a) { WQDirViewController *strongSelf = weakSelf; WQItem *latest = currentItem(); if (strongSelf && latest) wq_open_file(strongSelf.navigationController, latest.path, ro, WQOpenHex); }],
             ]]];
         }
+        if (!current.isLink && (current.isDir || current.isRegular)) {
+            [actions addObject:[UIAction actionWithTitle:@"Copy to Transfer Shelf"
+                                                   image:[UIImage systemImageNamed:@"doc.on.clipboard"]
+                                              identifier:nil handler:^(UIAction *__unused action) {
+                WQItem *latest = currentItem();
+                if (latest) [weakSelf copyItemToTransferShelf:latest];
+            }]];
+            [actions addObject:[UIAction actionWithTitle:@"Info"
+                                                   image:[UIImage systemImageNamed:@"info.circle"]
+                                              identifier:nil handler:^(UIAction *__unused action) {
+                WQItem *latest = currentItem();
+                if (latest) [weakSelf showInfoForItem:latest];
+            }]];
+        }
         [actions addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"]
                                           identifier:nil handler:^(UIAction *__unused a) {
             WQItem *latest = currentItem();
@@ -1352,6 +1430,13 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
             [actions addObject:remove];
         }
         if (!strongSelf.readOnly && !strongSelf->_backupStorage) {
+            if (!current.isLink && (current.isDir || current.isRegular))
+                [actions addObject:[UIAction actionWithTitle:@"Duplicate"
+                                                       image:[UIImage systemImageNamed:@"plus.square.on.square"]
+                                                  identifier:nil handler:^(UIAction *__unused action) {
+                    WQItem *latest = currentItem();
+                    if (latest) [weakSelf duplicateItem:latest];
+                }]];
             [actions addObject:[UIAction actionWithTitle:@"Rename" image:[UIImage systemImageNamed:@"pencil"]
                                               identifier:nil handler:^(UIAction *__unused a) { WQItem *latest = currentItem(); if (latest) [weakSelf promptRename:latest]; }]];
             UIAction *del = [UIAction actionWithTitle:@"Delete" image:[UIImage systemImageNamed:@"trash"]
@@ -1364,6 +1449,37 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
 }
 
 #pragma mark Actions
+
+- (void)showInfoForItem:(WQItem *)item
+{
+    NSString *type = item.isDir ? @"Folder" : (item.isRegular ? @"File" : @"Special item");
+    NSString *size = item.isDir ? @"Use folder measurement tools for recursive size" : wq_size_text(item.size);
+    NSString *date = wq_folder_date_text(item.modified);
+    NSString *details = [NSString stringWithFormat:
+        @"Type: %@\nSize: %@\nModified: %@\nOwner UID: %u\nMode: %04o%@\n\n%@",
+        type, size, date.length ? date : @"Unknown", item.uid, item.mode & 07777,
+        item.bundleID.length ? [NSString stringWithFormat:@"\nIdentifier: %@", item.bundleID] : @"", item.path];
+    wq_alert(self, item.label ?: item.name, details);
+}
+
+- (void)duplicateItem:(WQItem *)item
+{
+    NSString *extension = item.isDir ? @"" : item.name.pathExtension;
+    NSString *stem = item.isDir || !extension.length ? item.name : item.name.stringByDeletingPathExtension;
+    NSString *destination = nil;
+    for (NSUInteger n = 1; n < 1000; n++) {
+        NSString *suffix = n == 1 ? @" copy" : [NSString stringWithFormat:@" copy %lu", (unsigned long)n];
+        NSString *name = [stem stringByAppendingString:suffix];
+        if (extension.length) name = [name stringByAppendingPathExtension:extension];
+        NSString *candidate = [_path stringByAppendingPathComponent:name];
+        struct stat existing = {0};
+        if (!wq_stat(candidate, &existing)) { destination = candidate; break; }
+    }
+    if (!destination.length) { wq_alert(self, @"Cannot duplicate", @"Could not choose a free destination name."); return; }
+    NSString *source = [item.path copy];
+    [self runIO:^BOOL(NSString **error) { return wq_copy_item(source, destination, error); }
+          failure:@"Cannot duplicate item"];
+}
 
 - (void)runIO:(BOOL (^)(NSString **error))work failure:(NSString *)failureTitle
 {
@@ -1722,6 +1838,69 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 #pragma mark - Root
 
+@interface WQDualBrowserViewController : UIViewController
+@end
+
+@implementation WQDualBrowserViewController {
+    UINavigationController *_leftPane;
+    UINavigationController *_rightPane;
+    UISegmentedControl *_panePicker;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.title = @"Dual Browser";
+    self.view.backgroundColor = IPBackground();
+    WQDirViewController *left = [[WQDirViewController alloc]
+        initWithPath:@"/private/var/mobile/Containers/Data/Application" title:@"Left · App Data"];
+    WQDirViewController *right = [[WQDirViewController alloc]
+        initWithPath:@"/private/var/mobile/Containers/Shared/AppGroup" title:@"Right · App Groups"];
+    _leftPane = [[WQNavigationController alloc] initWithRootViewController:left];
+    _rightPane = [[WQNavigationController alloc] initWithRootViewController:right];
+    for (UINavigationController *pane in @[_leftPane, _rightPane]) {
+        [self addChildViewController:pane];
+        [self.view addSubview:pane.view];
+        [pane didMoveToParentViewController:self];
+        pane.view.layer.borderWidth = 1;
+        pane.view.layer.borderColor = IPSeparator().CGColor;
+    }
+    _panePicker = [[UISegmentedControl alloc] initWithItems:@[@"LEFT", @"RIGHT"]];
+    _panePicker.selectedSegmentIndex = 0;
+    [_panePicker addTarget:self action:@selector(switchPane) forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView = _panePicker;
+}
+
+- (void)switchPane
+{
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    CGRect bounds = self.view.bounds;
+    BOOL sideBySide = CGRectGetWidth(bounds) >= 700;
+    _panePicker.hidden = sideBySide;
+    if (sideBySide) {
+        CGFloat gap = 8;
+        CGFloat width = floor((CGRectGetWidth(bounds) - gap) / 2.0);
+        _leftPane.view.hidden = NO;
+        _rightPane.view.hidden = NO;
+        _leftPane.view.frame = CGRectMake(0, 0, width, CGRectGetHeight(bounds));
+        _rightPane.view.frame = CGRectMake(width + gap, 0, CGRectGetWidth(bounds) - width - gap, CGRectGetHeight(bounds));
+    } else {
+        BOOL showLeft = _panePicker.selectedSegmentIndex == 0;
+        _leftPane.view.hidden = !showLeft;
+        _rightPane.view.hidden = showLeft;
+        _leftPane.view.frame = bounds;
+        _rightPane.view.frame = bounds;
+    }
+}
+
+@end
+
 static void ip_sync_alternate_icon(void)
 {
     UIApplication *application = UIApplication.sharedApplication;
@@ -1732,6 +1911,40 @@ static void ip_sync_alternate_icon(void)
     [application setAlternateIconName:wanted completionHandler:^(NSError *error) {
         if (error) NSLog(@"Could not update themed app icon: %@", error.localizedDescription);
     }];
+}
+
+// Eight-by-eight glyphs keep dashboard/tool symbols genuinely pixel drawn in
+// Pixel mode. Blue and Lime continue to use the familiar SF Symbol set.
+static UIImage *ip_pixel_glyph(NSString *symbol)
+{
+    if (!IPPixelUIEnabled()) return [UIImage systemImageNamed:symbol];
+    NSDictionary<NSString *, NSArray<NSString *> *> *glyphs = @{
+        @"square.grid.2x2": @[@"00000000",@"01100110",@"01100110",@"00000000",@"01100110",@"01100110",@"00000000",@"00000000"],
+        @"square.stack.3d.up": @[@"00011000",@"00111100",@"01100110",@"00111100",@"01100110",@"00111100",@"00011000",@"00000000"],
+        @"puzzlepiece.extension": @[@"00011000",@"00111100",@"01111110",@"11111111",@"11100111",@"01111110",@"00111100",@"00011000"],
+        @"gearshape.2": @[@"00100100",@"01111110",@"11111111",@"11011011",@"11011011",@"11111111",@"01111110",@"00100100"],
+        @"cpu": @[@"01011010",@"00111100",@"01111110",@"11011011",@"11011011",@"01111110",@"00111100",@"01011010"],
+        @"lock.square.stack": @[@"00111100",@"01100110",@"01100110",@"11111111",@"11011011",@"11011011",@"11111111",@"00000000"],
+        @"trash": @[@"00111100",@"01111110",@"00111100",@"00111100",@"00111100",@"00111100",@"00111100",@"00000000"],
+        @"arrow.right.circle": @[@"00011000",@"00001100",@"11111110",@"11111111",@"11111110",@"00001100",@"00011000",@"00000000"],
+        @"clock.arrow.circlepath": @[@"00111100",@"01100110",@"11011011",@"11011011",@"11000011",@"01100110",@"00111100",@"00000110"],
+        @"doc.plaintext": @[@"01111100",@"01000110",@"01000011",@"01011111",@"01000001",@"01011111",@"01111111",@"00000000"],
+        @"rectangle.split.2x1": @[@"11111111",@"10011001",@"10011001",@"10011001",@"10011001",@"10011001",@"11111111",@"00000000"],
+    };
+    NSArray<NSString *> *rows = glyphs[symbol] ?: glyphs[@"doc.plaintext"];
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.opaque = NO;
+    format.scale = 1;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(32, 32) format:format];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextSetFillColorWithColor(context.CGContext, UIColor.whiteColor.CGColor);
+        for (NSUInteger y = 0; y < rows.count; y++) {
+            NSString *row = rows[y];
+            for (NSUInteger x = 0; x < MIN((NSUInteger)8, row.length); x++)
+                if ([row characterAtIndex:x] == '1') CGContextFillRect(context.CGContext, CGRectMake(x * 4, y * 4, 4, 4));
+        }
+    }];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
 @interface IPAppearanceSettingsViewController : UITableViewController
@@ -1948,7 +2161,13 @@ static void ip_sync_alternate_icon(void)
     UIButtonConfiguration *path = [UIButtonConfiguration filledButtonConfiguration];
     path.title = @"Go to a folder or file";
     path.subtitle = @"Open an absolute path";
-    path.image = [UIImage systemImageNamed:@"arrow.up.right"];
+    path.image = ip_pixel_glyph(@"arrow.right.circle");
+    if (IPPixelUIEnabled()) {
+        path.attributedTitle = [[NSAttributedString alloc] initWithString:path.title
+            attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleHeadline)}];
+        path.attributedSubtitle = [[NSAttributedString alloc] initWithString:path.subtitle
+            attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleFootnote)}];
+    }
     path.imagePlacement = NSDirectionalRectEdgeTrailing;
     path.imagePadding = 16;
     path.baseBackgroundColor = IPSurface();
@@ -2010,7 +2229,13 @@ static void ip_sync_alternate_icon(void)
             UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
             cfg.title = loc[0];
             cfg.subtitle = subtitles[j];
-            cfg.image = [UIImage systemImageNamed:loc[2]];
+            cfg.image = ip_pixel_glyph(loc[2]);
+            if (IPPixelUIEnabled()) {
+                cfg.attributedTitle = [[NSAttributedString alloc] initWithString:loc[0]
+                    attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleHeadline)}];
+                cfg.attributedSubtitle = [[NSAttributedString alloc] initWithString:subtitles[j]
+                    attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleFootnote)}];
+            }
             cfg.imagePlacement = NSDirectionalRectEdgeTop;
             cfg.imagePadding = 22;
             cfg.titlePadding = 5;
@@ -2132,7 +2357,7 @@ static void ip_sync_alternate_icon(void)
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     // System Groups is the extra last row, on iOS 27 only.
-    return section == 0 ? 0 : 6; // Containers are accessible cards in the dashboard header.
+    return section == 0 ? 0 : 7; // Containers are accessible cards in the dashboard header.
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
@@ -2158,21 +2383,23 @@ static void ip_sync_alternate_icon(void)
         if ((NSUInteger)indexPath.row < _locations.count) {
             NSArray *loc = _locations[(NSUInteger)indexPath.row];
             c.text = loc[0];
-            c.image = [UIImage systemImageNamed:loc[2]];
+            c.image = ip_pixel_glyph(loc[2]);
         } else {
             c.text = @"System Groups";
-            c.image = [UIImage systemImageNamed:@"lock.square.stack"];
+            c.image = ip_pixel_glyph(@"lock.square.stack");
         }
     } else {
-        NSArray *tools = @[@[@"Apps", @"square.grid.3x3"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
-                           @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"]];
+        NSArray *tools = @[@[@"Apps", @"square.grid.2x2"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
+                           @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
+                           @[@"Dual Browser", @"rectangle.split.2x1"]];
         c.text = tools[(NSUInteger)indexPath.row][0];
-        c.image = [UIImage systemImageNamed:tools[(NSUInteger)indexPath.row][1]];
+        c.image = ip_pixel_glyph(tools[(NSUInteger)indexPath.row][1]);
     }
     if (indexPath.section == 1) {
         NSArray *details = @[@"Browse, back up & manage app data", @"Review caches and temporary files",
             @"Jump directly to a folder or file", @"Restore or share complete app backups",
-            @"Recover overwritten and deleted files", @"Activity, access & diagnostics"];
+            @"Recover overwritten and deleted files", @"Activity, access & diagnostics",
+            @"Keep two locations open and copy between containers"];
         c.secondaryText = details[(NSUInteger)indexPath.row];
     }
     c.textProperties.font = IPTextFont(UIFontTextStyleHeadline);
@@ -2213,8 +2440,10 @@ static void ip_sync_alternate_icon(void)
     } else if (indexPath.row == 4) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
-    } else {
+    } else if (indexPath.row == 5) {
         next = [WQLogViewController new];
+    } else {
+        next = [WQDualBrowserViewController new];
     }
     [self.navigationController pushViewController:next animated:YES];
 }

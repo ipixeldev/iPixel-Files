@@ -8,13 +8,15 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.0 adds the optional **iPixel Pixel** interface, pixel-style typography, a dedicated file-sorting control, theme-aware folder animations and an automatic yellow/lime alternate app icon. Version 0.9 introduced the full iPixel interface rebuild.
+Version 1.1 completes the **iPixel Pixel** interface with a bundled pixel font, code-drawn pixel icons and stepped pixel animations. It also adds a dual browser and a safe transfer shelf for copying files or folders between accessible app containers. Version 1.0 added sorting, theme-aware animation colors and the yellow/lime alternate icon.
 
 ## iPixel-Files highlights
 
 - Complete **iPixel Blue**, **iPixel Lime** and optional **iPixel Pixel** visual systems.
 - Automatic blue or yellow/lime app icon and matching animated folder stacks.
 - File sorting by default order, name, date, type or size in either direction.
+- Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
+- Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
 - System, Light and Dark appearance modes.
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.
@@ -204,6 +206,7 @@ concurrent writes still require supported-device validation.
 ## Credit and license
 
 - **iPixel-Files design and development:** [iPixelDev](https://github.com/ipixeldev).
+- Pixel typography: Press Start 2P from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/pressstart2p), licensed under the SIL Open Font License 1.1.
 - **Original project:** [WQFiles](https://github.com/kolbicz/WQFiles) by [kolbicz](https://github.com/kolbicz).
 - Sandbox technique: [worse_query](https://github.com/forcequitOS/worse_query)
   by Taj C (forcequit), GPL-3.0-or-later. This app reimplements it.

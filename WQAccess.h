@@ -150,6 +150,10 @@ BOOL wq_purge_contents_cancellable(NSString *dir, unsigned long long *freed,
 // copies. This is not an all-children transaction: callers still own tree rollback.
 // Either side may be another app's container. Returns NO if anything failed.
 BOOL wq_copy_contents(NSString *srcDir, NSString *dstDir, NSString *_Nullable *_Nullable errorText);
+// Copies one regular file or directory tree to an explicit destination. An
+// existing file is safety-backed-up before replacement; an existing folder is
+// merged child-by-child using the same staged copy guarantees as app backups.
+BOOL wq_copy_item(NSString *source, NSString *destination, NSString *_Nullable *_Nullable errorText);
 
 // MCM container identifier (bundle or group id) of a container folder.
 NSString *_Nullable wq_container_label(NSString *dir);
