@@ -495,6 +495,14 @@ static NSString *wq_folder_date_text(NSDate *date)
     return date ? [formatter stringFromDate:date] : @"";
 }
 
+typedef NS_ENUM(NSInteger, WQFolderSortKey) {
+    WQFolderSortDefault = 0,
+    WQFolderSortName,
+    WQFolderSortDate,
+    WQFolderSortType,
+    WQFolderSortSize,
+};
+
 @implementation WQDirViewController {
     NSString *_path;
     NSArray<WQItem *> *_all;     // everything in the folder
@@ -527,6 +535,8 @@ static NSString *wq_folder_date_text(NSDate *date)
     BOOL _scanInFlight;
     BOOL _scanNeedsRefresh;
     NSTimeInterval _lastReloadFinished;
+    WQFolderSortKey _sortKey;
+    BOOL _sortAscending;
 }
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
@@ -535,6 +545,8 @@ static NSString *wq_folder_date_text(NSDate *date)
         _path = [path copy];
         self.title = title ?: (path.lastPathComponent.length ? path.lastPathComponent : @"/");
         _baseTitle = self.title;
+        _sortKey = WQFolderSortDefault;
+        _sortAscending = YES;
         _selectedBackups = [NSMutableSet new];
         // Container parents: show bundle/group identifiers instead of UUIDs.
         NSString *parent = path.lastPathComponent;
@@ -554,19 +566,8 @@ static NSString *wq_folder_date_text(NSDate *date)
     [super viewDidLoad];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
-    __weak typeof(self) weakSelf = self;
-    NSString *path = _path;
-    NSMutableArray<UIMenuElement *> *menuItems = [NSMutableArray new];
-    if (!self.readOnly && !_backupStorage) {
-        [menuItems addObject:[UIAction actionWithTitle:@"New Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf promptNewFolder]; }]];
-        [menuItems addObject:[UIAction actionWithTitle:@"Import File" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf importFile]; }]];
-    }
-    [menuItems addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
-                          handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-                                                 menu:[UIMenu menuWithChildren:menuItems]];
+                                                 menu:[self browserMenu]];
     if (_backupStorage) {
         _selectItem = [[UIBarButtonItem alloc] initWithTitle:@"Select" style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(enterBackupSelection)];
@@ -587,6 +588,85 @@ static NSString *wq_folder_date_text(NSDate *date)
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     [self reload];
+}
+
+- (UIMenu *)browserMenu
+{
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
+    NSArray *titles = @[@"Default", @"Name", @"Date", @"Type", @"Size"];
+    NSArray *symbols = @[@"line.3.horizontal.decrease", @"textformat", @"calendar", @"doc.on.doc", @"internaldrive"];
+    NSMutableArray<UIAction *> *sortActions = [NSMutableArray new];
+    for (NSInteger value = WQFolderSortDefault; value <= WQFolderSortSize; value++) {
+        UIAction *action = [UIAction actionWithTitle:titles[(NSUInteger)value]
+                                               image:[UIImage systemImageNamed:symbols[(NSUInteger)value]]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *__unused sender) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self->_sortKey = (WQFolderSortKey)value;
+            [self applySortAndFilter];
+            self->_menuItem.menu = [self browserMenu];
+        }];
+        action.state = _sortKey == value ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [sortActions addObject:action];
+    }
+    UIAction *direction = [UIAction actionWithTitle:_sortAscending ? @"Ascending" : @"Descending"
+                                               image:[UIImage systemImageNamed:_sortAscending ? @"chevron.up" : @"chevron.down"]
+                                          identifier:nil handler:^(__kindof UIAction *__unused sender) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self->_sortAscending = !self->_sortAscending;
+        [self applySortAndFilter];
+        self->_menuItem.menu = [self browserMenu];
+    }];
+    UIMenu *sort = [UIMenu menuWithTitle:@"Sort by"
+                                   image:[UIImage systemImageNamed:@"arrow.up.arrow.down"]
+                              identifier:nil
+                                 options:UIMenuOptionsSingleSelection
+                                children:[sortActions arrayByAddingObject:direction]];
+    [items addObject:sort];
+    if (!self.readOnly && !_backupStorage) {
+        [items addObject:[UIAction actionWithTitle:@"New Folder" image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf promptNewFolder]; }]];
+        [items addObject:[UIAction actionWithTitle:@"Import File" image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf importFile]; }]];
+    }
+    NSString *path = _path;
+    [items addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
+                      handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
+    return [UIMenu menuWithChildren:items];
+}
+
+- (void)applySortAndFilter
+{
+    NSArray<WQItem *> *source = [_all sortedArrayUsingComparator:^NSComparisonResult(WQItem *a, WQItem *b) {
+        if (a.isDir != b.isDir) return a.isDir ? NSOrderedAscending : NSOrderedDescending;
+        NSComparisonResult result = NSOrderedSame;
+        switch (self->_sortKey) {
+            case WQFolderSortDate:
+                result = [(a.modified ?: NSDate.distantPast) compare:(b.modified ?: NSDate.distantPast)];
+                break;
+            case WQFolderSortType: {
+                NSString *left = a.isDir ? @"" : a.name.pathExtension.lowercaseString;
+                NSString *right = b.isDir ? @"" : b.name.pathExtension.lowercaseString;
+                result = [left localizedCaseInsensitiveCompare:right];
+                break;
+            }
+            case WQFolderSortSize:
+                result = a.size < b.size ? NSOrderedAscending : (a.size > b.size ? NSOrderedDescending : NSOrderedSame);
+                break;
+            case WQFolderSortDefault:
+            case WQFolderSortName:
+                break;
+        }
+        if (result == NSOrderedSame)
+            result = [(a.label ?: a.name) localizedCaseInsensitiveCompare:(b.label ?: b.name)];
+        return self->_sortAscending ? result : (NSComparisonResult)-result;
+    }];
+    _all = source;
+    [self applyFilter];
+    [self.tableView reloadData];
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -628,7 +708,7 @@ static NSString *wq_folder_date_text(NSDate *date)
         _locationCard = [UIView new];
         _locationCard.backgroundColor = IPSurface();
         _locationCard.layer.cornerCurve = kCACornerCurveContinuous;
-        _locationCard.layer.cornerRadius = 24;
+        _locationCard.layer.cornerRadius = IPCornerRadius(24);
         [_headerBox addSubview:_locationCard];
 
         UIImageView *deviceIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"iphone.gen3"]];
@@ -1018,14 +1098,13 @@ static NSString *wq_folder_date_text(NSDate *date)
                 return;
             }
             self->_all = items;
-            [self applyFilter];
+            [self applySortAndFilter];
             self->_error = (names || childPaths != nil) ? nil
                 : (error.length ? error : @"Cannot list this folder. Container enumeration failed; see Log.");
             self->_scanStatus = nil;
             self->_lastReloadFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [self.refreshControl endRefreshing];
             [self updateHeader];
-            [self.tableView reloadData];
             [self updateBackupSelectionAvailability];
             if (self->_selectingBackups) [self updateBackupSelectionBar];
         });
@@ -1653,7 +1732,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return section == 0 ? 2 : 3;
+    return section == 0 ? 3 : 3;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
@@ -1674,12 +1753,15 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"theme"];
     UIListContentConfiguration *content = cell.defaultContentConfiguration;
     if (indexPath.section == 0) {
-        NSArray *names = @[@"iPixel Blue", @"iPixel Lime"];
-        NSArray *details = @[@"Clean navy, electric blue and ice surfaces", @"Charcoal, lime and soft utility cards"];
-        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime)];
+        NSArray *names = @[@"iPixel Blue", @"iPixel Lime", @"iPixel Pixel"];
+        NSArray *details = @[@"Clean navy, electric blue and ice surfaces",
+                             @"Charcoal, lime and soft utility cards",
+                             @"Crisp pixel edges, retro color and monospaced type"];
+        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime), @(IPThemeStylePixel)];
         content.text = names[(NSUInteger)indexPath.row];
         content.secondaryText = details[(NSUInteger)indexPath.row];
-        content.image = [UIImage systemImageNamed:indexPath.row == 0 ? @"folder.fill" : @"sparkles"];
+        NSArray *symbols = @[@"folder.fill", @"sparkles", @"square.grid.3x3.fill"];
+        content.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
         cell.accessoryType = IPSelectedTheme() == values[(NSUInteger)indexPath.row].integerValue
             ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     } else {
@@ -1701,7 +1783,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) {
-        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime)];
+        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime), @(IPThemeStylePixel)];
         [NSUserDefaults.standardUserDefaults setInteger:values[(NSUInteger)indexPath.row].integerValue
                                                  forKey:IPThemeStyleDefaultsKey];
     }
@@ -1815,7 +1897,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     UIView *hero = [UIView new];
     hero.backgroundColor = IPElevatedSurface();
     hero.layer.cornerCurve = kCACornerCurveContinuous;
-    hero.layer.cornerRadius = 28;
+    hero.layer.cornerRadius = IPCornerRadius(28);
     UIView *heroFolders = wq_folder_stack_view(CGSizeMake(104, 104), YES);
     UILabel *heroTitle = [self dashboardLabel:@"Your files, beautifully organized."
         style:UIFontTextStyleTitle2 color:IPPrimaryText()];
@@ -1856,7 +1938,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
     UIView *storage = [UIView new];
     storage.backgroundColor = IPSurface();
-    storage.layer.cornerRadius = 26;
+    storage.layer.cornerRadius = IPCornerRadius(26);
     UIStackView *storageStack = [UIStackView new];
     storageStack.axis = UILayoutConstraintAxisVertical;
     storageStack.spacing = 10;
@@ -1912,7 +1994,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
             cfg.baseForegroundColor = IPCardForeground();
             cfg.baseBackgroundColor = IPCardColor(j);
             cfg.contentInsets = NSDirectionalEdgeInsetsMake(20, 18, 20, 18);
-            cfg.background.cornerRadius = 26;
+            cfg.background.cornerRadius = IPCornerRadius(26);
             cfg.cornerStyle = UIButtonConfigurationCornerStyleFixed;
             UIButton *button = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
             button.tag = (NSInteger)j;
@@ -1951,13 +2033,13 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     UIView *card = [UIView new];
     card.backgroundColor = IPElevatedSurface();
     card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.cornerRadius = 24;
+    card.layer.cornerRadius = IPCornerRadius(24);
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [footer addSubview:card];
 
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage imageNamed:@"AppIcon60x60"]];
     icon.layer.cornerCurve = kCACornerCurveContinuous;
-    icon.layer.cornerRadius = 13;
+    icon.layer.cornerRadius = IPCornerRadius(13);
     icon.clipsToBounds = YES;
     [icon.widthAnchor constraintEqualToConstant:52].active = YES;
     [icon.heightAnchor constraintEqualToConstant:52].active = YES;

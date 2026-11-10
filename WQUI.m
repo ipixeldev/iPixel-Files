@@ -127,7 +127,7 @@ UIView *wq_device_header(CGFloat width)
     card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     card.backgroundColor = IPElevatedSurface();
     card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.cornerRadius = 20;
+    card.layer.cornerRadius = IPCornerRadius(20);
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"iphone.gen3"]];
     icon.frame = CGRectMake(16, 17, 34, 34);
     icon.contentMode = UIViewContentModeScaleAspectFit;
