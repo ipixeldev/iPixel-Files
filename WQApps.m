@@ -682,7 +682,10 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     }
     c.textProperties.color = IPPrimaryText();
     c.secondaryTextProperties.color = IPSecondaryText();
-    c.image = wq_app_icon(app.bundleID) ?: [UIImage systemImageNamed:@"app.dashed"];
+    // Always show a recognisable tile. When iOS withholds the real icon or the
+    // bundle identifier, use the container identifier to create a stable
+    // fallback instead of leaving a blank/dashed icon.
+    c.image = wq_app_icon(app.bundleID.length ? app.bundleID : identifier) ?: [UIImage systemImageNamed:@"app.fill"];
     c.imageProperties.maximumSize = CGSizeMake(36, 36);
     cell.contentConfiguration = c;
     IPStyleCell(cell);

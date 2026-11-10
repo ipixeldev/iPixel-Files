@@ -39,6 +39,42 @@ static BOOL wq_regular_file_for_ui(NSString *path)
     return S_ISREG(st.st_mode);
 }
 
+static NSString *const WQStarredLocationsKey = @"WQStarredLocationsV1";
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *wq_starred_locations(void)
+{
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:WQStarredLocationsKey];
+    NSMutableArray *valid = [NSMutableArray new];
+    for (id value in saved) {
+        if (![value isKindOfClass:NSDictionary.class]) continue;
+        NSString *path = value[@"path"], *name = value[@"name"];
+        if (![path isKindOfClass:NSString.class] || ![path hasPrefix:@"/"]) continue;
+        [valid addObject:@{@"path": path.stringByStandardizingPath,
+                           @"name": [name isKindOfClass:NSString.class] && name.length ? name : path.lastPathComponent}];
+    }
+    return valid;
+}
+
+static BOOL wq_location_is_starred(NSString *path)
+{
+    NSString *key = path.stringByStandardizingPath;
+    for (NSDictionary *item in wq_starred_locations())
+        if ([item[@"path"] isEqualToString:key]) return YES;
+    return NO;
+}
+
+static void wq_set_location_starred(NSString *path, NSString *name, BOOL starred)
+{
+    NSString *key = path.stringByStandardizingPath;
+    NSMutableArray *items = wq_starred_locations().mutableCopy;
+    NSIndexSet *matching = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *item, NSUInteger __unused idx, BOOL *__unused stop) {
+        return [item[@"path"] isEqualToString:key];
+    }];
+    [items removeObjectsAtIndexes:matching];
+    if (starred) [items insertObject:@{@"path": key, @"name": name.length ? name : (key.lastPathComponent ?: key)} atIndex:0];
+    [NSUserDefaults.standardUserDefaults setObject:items forKey:WQStarredLocationsKey];
+}
+
 #pragma mark - Item
 
 @interface WQItem : NSObject
@@ -530,6 +566,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     UIBarButtonItem *_selectItem;
     UIBarButtonItem *_sortItem;
     UIBarButtonItem *_menuItem;
+    UIBarButtonItem *_starItem;
     UIBarButtonItem *_doneItem;
     UIBarButtonItem *_deleteItem;
     UIBarButtonItem *_allItem;
@@ -575,13 +612,17 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     _sortItem.accessibilityLabel = @"Sort files";
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                  menu:[self browserMenu]];
+    _starItem = [[UIBarButtonItem alloc] initWithImage:nil style:UIBarButtonItemStylePlain
+                                                target:self action:@selector(toggleStar)];
+    _starItem.accessibilityLabel = @"Star this folder";
+    [self updateStarButton];
     if (_backupStorage) {
         _selectItem = [[UIBarButtonItem alloc] initWithTitle:@"Select" style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(enterBackupSelection)];
         _selectItem.enabled = NO;
-        self.navigationItem.rightBarButtonItems = @[_selectItem, _sortItem, _menuItem];
+        self.navigationItem.rightBarButtonItems = @[_selectItem, _starItem, _sortItem, _menuItem];
     } else {
-        self.navigationItem.rightBarButtonItems = @[_sortItem, _menuItem];
+        self.navigationItem.rightBarButtonItems = @[_starItem, _sortItem, _menuItem];
     }
     [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -597,6 +638,26 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(transferShelfDidChange:)
         name:WQTransferShelfDidChangeNotification object:nil];
     [self reload];
+}
+
+- (void)updateStarButton
+{
+    BOOL starred = wq_location_is_starred(_path);
+    _starItem.image = [UIImage systemImageNamed:starred ? @"star.fill" : @"star"];
+    _starItem.tintColor = starred ? UIColor.systemYellowColor : IPAccent();
+    _starItem.accessibilityLabel = starred ? @"Remove this folder from Starred" : @"Add this folder to Starred";
+}
+
+- (void)toggleStar
+{
+    BOOL next = !wq_location_is_starred(_path);
+    wq_set_location_starred(_path, _baseTitle, next);
+    [self updateStarButton];
+    _scanStatus = next ? @"Added to Starred" : @"Removed from Starred";
+    [self updateHeader];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([self->_scanStatus hasSuffix:@"Starred"]) { self->_scanStatus = nil; [self updateHeader]; }
+    });
 }
 
 - (void)dealloc
@@ -954,7 +1015,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
     self.refreshControl.enabled = YES;
     self.title = _baseTitle;
     self.navigationItem.rightBarButtonItems = _backupStorage
-        ? @[_selectItem, _sortItem, _menuItem] : @[_sortItem, _menuItem];
+        ? @[_selectItem, _starItem, _sortItem, _menuItem] : @[_starItem, _sortItem, _menuItem];
     [self.tableView reloadData];
     [self updateBackupSelectionAvailability];
 }
@@ -1173,9 +1234,9 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
                 return;
             }
             self->_all = items;
-            [self applySortAndFilter];
             self->_error = (names || childPaths != nil) ? nil
                 : (error.length ? error : @"Cannot list this folder. Container enumeration failed; see Log.");
+            [self applySortAndFilter];
             self->_scanStatus = nil;
             self->_lastReloadFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [self.refreshControl endRefreshing];
@@ -1188,7 +1249,7 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return _error ? 1 : (NSInteger)_items.count;
+    return (_error || _scanInFlight || _items.count == 0) ? 1 : (NSInteger)_items.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1209,6 +1270,25 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
         cell.contentConfiguration = c;
         IPStyleCell(cell);
         cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+    if (_scanInFlight || _items.count == 0) {
+        BOOL searching = _query.length > 0 && _all.count > 0;
+        c.text = _scanInFlight ? @"Loading folder…" : (searching ? @"No matching items" : @"This folder is empty");
+        c.secondaryText = _scanInFlight
+            ? @"Checking access and reading this location."
+            : (searching ? @"The folder loaded, but nothing matches your search."
+                         : @"Loaded successfully — there are no files or folders here.");
+        c.secondaryTextProperties.numberOfLines = 0;
+        c.image = [UIImage systemImageNamed:_scanInFlight ? @"arrow.triangle.2.circlepath" :
+                   (searching ? @"magnifyingglass" : @"folder")];
+        c.imageProperties.tintColor = IPAccent();
+        c.textProperties.color = IPPrimaryText();
+        c.secondaryTextProperties.color = IPSecondaryText();
+        cell.contentConfiguration = c;
+        IPStyleCell(cell);
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
         return cell;
     }
     WQItem *item = _items[(NSUInteger)indexPath.row];
@@ -1358,6 +1438,13 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
         if (!current || !strongSelf) return nil;
         NSMutableArray *actions = [NSMutableArray new];
         if (current.isDir) {
+            BOOL starred = wq_location_is_starred(current.path);
+            [actions addObject:[UIAction actionWithTitle:starred ? @"Remove from Starred" : @"Add to Starred"
+                                                   image:[UIImage systemImageNamed:starred ? @"star.slash" : @"star"]
+                                              identifier:nil handler:^(UIAction *__unused a) {
+                WQItem *latest = currentItem();
+                if (latest) wq_set_location_starred(latest.path, latest.label ?: latest.name, !starred);
+            }]];
             [actions addObject:[UIAction actionWithTitle:@"Share as ZIP (AirDrop…)" image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
@@ -1622,6 +1709,95 @@ static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfD
 
 @end
 
+#pragma mark - Starred locations
+
+@interface WQStarredViewController : UITableViewController
+@end
+
+@implementation WQStarredViewController {
+    NSArray<NSDictionary<NSString *, NSString *> *> *_locations;
+}
+
+- (instancetype)init
+{
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.title = @"Starred";
+    self.tableView.backgroundColor = IPBackground();
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    _locations = wq_starred_locations();
+    [self.tableView reloadData];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return MAX((NSInteger)1, (NSInteger)_locations.count);
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"starred"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"starred"];
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    if (_locations.count == 0) {
+        content.text = @"No starred folders yet";
+        content.secondaryText = @"Open a folder and tap the star in the navigation bar, or long-press a folder.";
+        content.secondaryTextProperties.numberOfLines = 0;
+        content.image = [UIImage systemImageNamed:@"star"];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else {
+        NSDictionary *item = _locations[(NSUInteger)indexPath.row];
+        content.text = item[@"name"];
+        content.secondaryText = item[@"path"];
+        content.secondaryTextProperties.numberOfLines = 2;
+        content.image = [UIImage systemImageNamed:@"folder.fill"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    content.textProperties.color = IPPrimaryText();
+    content.secondaryTextProperties.color = IPSecondaryText();
+    content.imageProperties.tintColor = IPAccent();
+    cell.contentConfiguration = content;
+    IPStyleCell(cell);
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if ((NSUInteger)indexPath.row >= _locations.count) return;
+    NSDictionary *item = _locations[(NSUInteger)indexPath.row];
+    [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:item[@"path"] title:item[@"name"]]
+                                         animated:YES];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if ((NSUInteger)indexPath.row >= _locations.count) return nil;
+    NSDictionary *item = _locations[(NSUInteger)indexPath.row];
+    UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"Remove" handler:^(UIContextualAction *__unused action, UIView *__unused view, void (^done)(BOOL)) {
+        wq_set_location_starred(item[@"path"], item[@"name"], NO);
+        self->_locations = wq_starred_locations();
+        [self.tableView reloadData];
+        done(YES);
+    }];
+    remove.image = [UIImage systemImageNamed:@"star.slash"];
+    return [UISwipeActionsConfiguration configurationWithActions:@[remove]];
+}
+
+@end
+
 #pragma mark - System groups
 
 // The SystemGroup parent gets no token on 27.0.1, so it cannot be listed.
@@ -1679,6 +1855,22 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 {
     if (!_names) return @"Loading…";
     return _listed ? nil : @"This folder cannot be listed on this iOS version. Known names that exist are shown; tap + to try another name.";
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section
+{
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+    header.textLabel.font = IPPixelUIEnabled() ? IPFont(15, UIFontWeightBold) : IPTextFont(UIFontTextStyleHeadline);
+    header.textLabel.textColor = IPSecondaryText();
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section
+{
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)view;
+    footer.textLabel.font = IPPixelUIEnabled() ? IPFont(11, UIFontWeightRegular) : IPTextFont(UIFontTextStyleFootnote);
+    footer.textLabel.textColor = IPSecondaryText();
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return (NSInteger)_names.count; }
@@ -1930,6 +2122,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         @"clock.arrow.circlepath": @[@"00111100",@"01100110",@"11011011",@"11011011",@"11000011",@"01100110",@"00111100",@"00000110"],
         @"doc.plaintext": @[@"01111100",@"01000110",@"01000011",@"01011111",@"01000001",@"01011111",@"01111111",@"00000000"],
         @"rectangle.split.2x1": @[@"11111111",@"10011001",@"10011001",@"10011001",@"10011001",@"10011001",@"11111111",@"00000000"],
+        @"star.fill": @[@"00011000",@"01011010",@"00111100",@"11111111",@"01111110",@"00111100",@"01100110",@"01000010"],
     };
     NSArray<NSString *> *rows = glyphs[symbol] ?: glyphs[@"doc.plaintext"];
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
@@ -2138,7 +2331,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     UIView *heroFolders = wq_folder_stack_view(CGSizeMake(104, 104), YES);
     UILabel *heroTitle = [self dashboardLabel:@"Your files, beautifully organized."
         style:UIFontTextStyleTitle2 color:IPPrimaryText()];
-    heroTitle.font = IPFont(23, UIFontWeightBold);
+    heroTitle.font = IPFont(20, UIFontWeightBold);
     UILabel *heroDetail = [self dashboardLabel:@"Explore containers, manage storage and keep every change protected."
         style:UIFontTextStyleFootnote color:IPSecondaryText()];
     UIStackView *heroCopy = [[UIStackView alloc] initWithArrangedSubviews:@[heroTitle, heroDetail]];
@@ -2164,9 +2357,9 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     path.image = ip_pixel_glyph(@"arrow.right.circle");
     if (IPPixelUIEnabled()) {
         path.attributedTitle = [[NSAttributedString alloc] initWithString:path.title
-            attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleHeadline)}];
+            attributes:@{NSFontAttributeName: IPFont(15, UIFontWeightBold)}];
         path.attributedSubtitle = [[NSAttributedString alloc] initWithString:path.subtitle
-            attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleFootnote)}];
+            attributes:@{NSFontAttributeName: IPFont(11, UIFontWeightRegular)}];
     }
     path.imagePlacement = NSDirectionalRectEdgeTrailing;
     path.imagePadding = 16;
@@ -2232,9 +2425,9 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
             cfg.image = ip_pixel_glyph(loc[2]);
             if (IPPixelUIEnabled()) {
                 cfg.attributedTitle = [[NSAttributedString alloc] initWithString:loc[0]
-                    attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleHeadline)}];
+                    attributes:@{NSFontAttributeName: IPFont(15, UIFontWeightBold)}];
                 cfg.attributedSubtitle = [[NSAttributedString alloc] initWithString:subtitles[j]
-                    attributes:@{NSFontAttributeName: IPTextFont(UIFontTextStyleFootnote)}];
+                    attributes:@{NSFontAttributeName: IPFont(11, UIFontWeightRegular)}];
             }
             cfg.imagePlacement = NSDirectionalRectEdgeTop;
             cfg.imagePadding = 22;
@@ -2357,7 +2550,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     // System Groups is the extra last row, on iOS 27 only.
-    return section == 0 ? 0 : 7; // Containers are accessible cards in the dashboard header.
+    return section == 0 ? 0 : 8; // Containers are accessible cards in the dashboard header.
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
@@ -2372,6 +2565,22 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     return section == 1
         ? @"Every destructive file action creates a safety copy first."
         : nil;
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section
+{
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
+    header.textLabel.font = IPPixelUIEnabled() ? IPFont(15, UIFontWeightBold) : IPTextFont(UIFontTextStyleHeadline);
+    header.textLabel.textColor = IPSecondaryText();
+}
+
+- (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section
+{
+    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
+    UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)view;
+    footer.textLabel.font = IPPixelUIEnabled() ? IPFont(11, UIFontWeightRegular) : IPTextFont(UIFontTextStyleFootnote);
+    footer.textLabel.textColor = IPSecondaryText();
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -2390,14 +2599,14 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         }
     } else {
         NSArray *tools = @[@[@"Apps", @"square.grid.2x2"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
-                           @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
+                           @[@"Starred", @"star.fill"], @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
                            @[@"Dual Browser", @"rectangle.split.2x1"]];
         c.text = tools[(NSUInteger)indexPath.row][0];
         c.image = ip_pixel_glyph(tools[(NSUInteger)indexPath.row][1]);
     }
     if (indexPath.section == 1) {
         NSArray *details = @[@"Browse, back up & manage app data", @"Review caches and temporary files",
-            @"Jump directly to a folder or file", @"Restore or share complete app backups",
+            @"Jump directly to a folder or file", @"Return to saved folders quickly", @"Restore or share complete app backups",
             @"Recover overwritten and deleted files", @"Activity, access & diagnostics",
             @"Keep two locations open and copy between containers"];
         c.secondaryText = details[(NSUInteger)indexPath.row];
@@ -2435,12 +2644,14 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         [self goToPath];
         return;
     } else if (indexPath.row == 3) {
+        next = [WQStarredViewController new];
+    } else if (indexPath.row == 4) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App Backups"];
-    } else if (indexPath.row == 4) {
+    } else if (indexPath.row == 5) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
-    } else if (indexPath.row == 5) {
+    } else if (indexPath.row == 6) {
         next = [WQLogViewController new];
     } else {
         next = [WQDualBrowserViewController new];

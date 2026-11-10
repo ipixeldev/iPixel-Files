@@ -267,6 +267,17 @@ static NSData *wq_icon_fingerprint(UIImage *img)
     return [NSData dataWithBytes:px length:sizeof(px)];
 }
 
+static BOOL wq_icon_has_visible_pixels(UIImage *image)
+{
+    NSData *sample = wq_icon_fingerprint(image);
+    if (!sample.length) return NO;
+    const uint8_t *bytes = sample.bytes;
+    NSUInteger visible = 0;
+    for (NSUInteger i = 3; i < sample.length; i += 4)
+        if (bytes[i] > 24) visible++;
+    return visible >= (sample.length / 4) / 5; // at least 20% non-transparent
+}
+
 static UIImage *wq_raw_icon(NSString *bundleID)
 {
     if (![UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)]) return nil;
@@ -289,7 +300,7 @@ static UIImage *wq_real_icon(NSString *bundleID)
     static dispatch_once_t once;
     dispatch_once(&once, ^{ placeholder = wq_icon_fingerprint(wq_raw_icon(@"cz.kolbi.wqfiles.no-such-app")); });
     UIImage *raw = wq_raw_icon(bundleID);
-    if (!raw || !raw.CGImage) return nil;
+    if (!raw || !raw.CGImage || !wq_icon_has_visible_pixels(raw)) return nil;
     NSData *fp = wq_icon_fingerprint(raw);
     if (!placeholder || fp.length != placeholder.length) return raw;
     // Near-identical to the placeholder (allow small rendering differences).
@@ -327,7 +338,7 @@ static UIImage *wq_bundle_icon(NSString *bundleID)
         NSString *base = name.stringByDeletingPathExtension;
         for (NSString *suffix in @[@"@3x.png", @"@2x.png", @"@2x~ipad.png", @"~ipad.png", @".png"]) {
             UIImage *image = [UIImage imageWithContentsOfFile:[path stringByAppendingPathComponent:[base stringByAppendingString:suffix]]];
-            if (image.CGImage) return image;
+            if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
         }
     }
     return nil;
@@ -405,10 +416,17 @@ static UIImage *wq_service_tile(NSString *bundleID)
     NSString *key = bundleID.lowercaseString;
     NSString *symbol = @"gearshape.fill";
     UIColor *color = UIColor.systemGrayColor;
+    BOOL matched = NO;
     for (NSArray *rule in rules) {
         BOOL hit = NO;
         for (NSString *word in rule[0]) if ([key containsString:word]) { hit = YES; break; }
-        if (hit) { symbol = rule[1]; color = rule[2]; break; }
+        if (hit) { symbol = rule[1]; color = rule[2]; matched = YES; break; }
+    }
+    if (!matched) {
+        NSArray<UIColor *> *palette = @[UIColor.systemBlueColor, UIColor.systemIndigoColor,
+            UIColor.systemTealColor, UIColor.systemPurpleColor, UIColor.systemOrangeColor];
+        color = palette[(NSUInteger)llabs((long long)key.hash) % palette.count];
+        symbol = [key containsString:@"-"] ? @"app.fill" : @"gearshape.fill";
     }
     NSString *cacheKey = [symbol stringByAppendingString:color.description];
     UIImage *tile = [tiles objectForKey:cacheKey];

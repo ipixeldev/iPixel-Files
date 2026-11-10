@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.2 fixes container access for sideloading services that provide multiple generated App Groups. It tests every entitled group and verifies that a directory can really be enumerated before accepting its sandbox token. Version 1.1 completed the **iPixel Pixel** interface and added the dual browser and transfer shelf.
+Version 1.3 adds explicit loading, empty, search-empty and access-error folder states; persistent starred locations; reliable icon fallbacks; and a disciplined Pixel type scale. Version 1.2 fixed container access for sideloading services that provide multiple generated App Groups.
 
 ## iPixel-Files highlights
 
@@ -17,6 +17,8 @@ Version 1.2 fixes container access for sideloading services that provide multipl
 - File sorting by default order, name, date, type or size in either direction.
 - Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
 - Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
+- Persistent starred folders with quick access from Home.
+- Clear loading, loaded-empty, no-results and access-denied folder states.
 - System, Light and Dark appearance modes.
 - Animated, text-free folder-stack splash and scan progress UI.
 - App/container browser, backups, cache cleaner and activity log.

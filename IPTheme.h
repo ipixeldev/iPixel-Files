@@ -138,7 +138,16 @@ static inline UIColor *IPCardForeground(void) {
 
 static inline UIFont *IPFont(CGFloat size, UIFontWeight weight) {
     if (IPPixelUIEnabled()) {
-        UIFont *pixel = [UIFont fontWithName:@"PressStart2P-Regular" size:MAX(8, size * 0.78)];
+        // Press Start 2P is visually much larger and wider than San Francisco.
+        // A semantic stepped scale prevents arbitrary call-site sizes from
+        // producing giant headings beside microscopic body text.
+        CGFloat pixelSize = 9;
+        if (size >= 30) pixelSize = 19;
+        else if (size >= 23) pixelSize = 16;
+        else if (size >= 18) pixelSize = 14;
+        else if (size >= 15) pixelSize = 12;
+        else if (size >= 12) pixelSize = 10;
+        UIFont *pixel = [UIFont fontWithName:@"PressStart2P-Regular" size:pixelSize];
         if (pixel) return pixel;
         NSString *name = weight >= UIFontWeightSemibold ? @"Menlo-Bold" : @"Menlo-Regular";
         pixel = [UIFont fontWithName:name size:size];
@@ -169,8 +178,11 @@ static inline UIFont *IPTextFont(UIFontTextStyle style) {
 static inline void IPStyleCell(UITableViewCell *cell) {
     if (IPPixelUIEnabled() && [cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = (UIListContentConfiguration *)cell.contentConfiguration;
-        content.textProperties.font = IPFont(16, UIFontWeightSemibold);
+        content.textProperties.font = IPFont(15, UIFontWeightSemibold);
         content.secondaryTextProperties.font = IPFont(11, UIFontWeightRegular);
+        content.textProperties.numberOfLines = 2;
+        if (content.secondaryTextProperties.numberOfLines != 0)
+            content.secondaryTextProperties.numberOfLines = MAX((NSInteger)2, content.secondaryTextProperties.numberOfLines);
         cell.contentConfiguration = content;
     }
     UIBackgroundConfiguration *background = [UIBackgroundConfiguration clearConfiguration];
