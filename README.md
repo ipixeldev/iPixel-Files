@@ -8,7 +8,7 @@
 
 This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
 
-Version 1.8 adds gesture-first image viewing, recents, bounded cross-location search, measured folder sizes and SQLite sidecar handling. Version 1.7 stabilized audio playback controls, thumbnail loading and folder transitions.
+Version 1.9 adds optional Files-style bottom navigation, a compact standalone Recents screen, and safe batch copy/delete actions. Version 1.8 added gesture-first image viewing, bounded cross-location search, measured folder sizes and SQLite sidecar handling.
 
 ## iPixel-Files highlights
 
@@ -18,9 +18,10 @@ Version 1.8 adds gesture-first image viewing, recents, bounded cross-location se
 - Persistent List and two-column Grid views, with larger icons and media thumbnails in Grid.
 - Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
 - Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
-- Multi-select regular files and send them together to Share or Save to Files.
+- Multi-select regular files to share, copy between folders, or delete them together with safety backups.
 - Persistent starred folders with quick access from Home.
-- Recent folders and viewed files with per-item removal and Clear All.
+- A standalone Recents screen for folders and viewed files, with per-item removal and Clear All.
+- Optional bottom navigation for Home, Apps, Starred, Recents and Search; enabling it removes those duplicate tool rows from Home.
 - Bounded global search across accessible visited, starred and backup folder trees.
 - Clear loading, loaded-empty, no-results and access-denied folder states.
 - System, Light and Dark appearance modes.

@@ -14,6 +14,7 @@ typedef NS_ENUM(NSInteger, IPAppearanceMode) {
 
 static NSString *const IPThemeStyleDefaultsKey = @"IPThemeStyle";
 static NSString *const IPAppearanceModeDefaultsKey = @"IPAppearanceMode";
+static NSString *const IPBottomNavbarDefaultsKey = @"IPBottomNavbar";
 static NSString *const IPThemeDidChangeNotification = @"IPThemeDidChangeNotification";
 
 static inline UIColor *IPColor(unsigned int rgb) {
@@ -30,6 +31,7 @@ static inline IPThemeStyle IPSelectedTheme(void) {
 }
 
 static inline BOOL IPPixelUIEnabled(void) { return IPSelectedTheme() == IPThemeStylePixel; }
+static inline BOOL IPBottomNavbarEnabled(void) { return [NSUserDefaults.standardUserDefaults boolForKey:IPBottomNavbarDefaultsKey]; }
 static inline CGFloat IPCornerRadius(CGFloat regular) { return IPPixelUIEnabled() ? 3.0 : regular; }
 
 static inline IPAppearanceMode IPSelectedAppearance(void) {
@@ -232,6 +234,14 @@ static inline void IPInstallAppearance(void) {
     UIToolbar.appearance.standardAppearance = toolbar;
     UIToolbar.appearance.scrollEdgeAppearance = toolbar;
     UIToolbar.appearance.tintColor = IPAccent();
+
+    UITabBarAppearance *tabs = [UITabBarAppearance new];
+    [tabs configureWithOpaqueBackground];
+    tabs.backgroundColor = IPBackground();
+    tabs.shadowColor = IPSeparator();
+    UITabBar.appearance.standardAppearance = tabs;
+    if (@available(iOS 15.0, *)) UITabBar.appearance.scrollEdgeAppearance = tabs;
+    UITabBar.appearance.tintColor = IPAccent();
 
     UITableView.appearance.backgroundColor = IPBackground();
     UITableView.appearance.separatorColor = IPSeparator();

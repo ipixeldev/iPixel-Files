@@ -689,7 +689,7 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     [self.view addSubview:share];
     [NSLayoutConstraint activateConstraints:@[
         [share.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:16],
-        [share.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12]
+        [share.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-92]
     ]];
     NSSet *audio = [NSSet setWithArray:@[@"mp3", @"m4a", @"aac", @"wav", @"caf", @"aiff"]];
     if ([audio containsObject:_path.pathExtension.lowercaseString]) {
@@ -1087,7 +1087,7 @@ typedef NS_ENUM(NSInteger, WQFolderSortKey) {
     WQFolderSortSize,
 };
 
-static NSString *gTransferShelfPath;
+static NSArray<NSString *> *gTransferShelfPaths;
 static NSString *const WQTransferShelfDidChangeNotification = @"WQTransferShelfDidChangeNotification";
 static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 
@@ -1199,6 +1199,8 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     UIBarButtonItem *_doneItem;
     UIBarButtonItem *_deleteItem;
     UIBarButtonItem *_shareItem;
+    UIBarButtonItem *_fileDeleteItem;
+    UIBarButtonItem *_fileCopyItem;
     UIBarButtonItem *_fileDoneItem;
     UIBarButtonItem *_fileAllItem;
     UIBarButtonItem *_allItem;
@@ -1378,18 +1380,19 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
                                             identifier:nil handler:^(UIAction *__unused action) { [weakSelf enterFileSelection]; }];
     if (_selectingFiles || _selectingBackups) selectFiles.attributes = UIMenuElementAttributesDisabled;
     [items addObject:selectFiles];
-    NSString *pasteTitle = gTransferShelfPath.length
-        ? [NSString stringWithFormat:@"Paste %@ Here", gTransferShelfPath.lastPathComponent]
-        : @"Paste from Transfer Shelf";
+    NSString *pasteTitle = gTransferShelfPaths.count == 1
+        ? [NSString stringWithFormat:@"Paste %@ Here", gTransferShelfPaths.firstObject.lastPathComponent]
+        : (gTransferShelfPaths.count > 1 ? [NSString stringWithFormat:@"Paste %lu Items Here", (unsigned long)gTransferShelfPaths.count]
+        : @"Paste from Transfer Shelf");
     UIAction *paste = [UIAction actionWithTitle:pasteTitle image:[UIImage systemImageNamed:@"doc.on.clipboard"]
                                       identifier:nil handler:^(UIAction *__unused a) { [weakSelf pasteTransferShelf]; }];
-    if (!gTransferShelfPath.length || self.readOnly || _backupStorage)
+    if (!gTransferShelfPaths.count || self.readOnly || _backupStorage)
         paste.attributes = UIMenuElementAttributesDisabled;
     [items addObject:paste];
-    if (gTransferShelfPath.length) {
+    if (gTransferShelfPaths.count) {
         [items addObject:[UIAction actionWithTitle:@"Clear Transfer Shelf" image:[UIImage systemImageNamed:@"xmark.bin"]
                                        identifier:nil handler:^(UIAction *__unused a) {
-            gTransferShelfPath = nil;
+            gTransferShelfPaths = nil;
             [NSNotificationCenter.defaultCenter postNotificationName:WQTransferShelfDidChangeNotification object:nil];
         }]];
     }
@@ -1413,7 +1416,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)copyItemToTransferShelf:(WQItem *)item
 {
     if (!item.path.length || item.isLink || (!item.isDir && !item.isRegular)) return;
-    gTransferShelfPath = [item.path copy];
+    gTransferShelfPaths = @[[item.path copy]];
     [NSNotificationCenter.defaultCenter postNotificationName:WQTransferShelfDidChangeNotification object:nil];
     _scanStatus = [NSString stringWithFormat:@"%@ ready to paste", item.label ?: item.name];
     [self updateHeader];
@@ -1424,20 +1427,34 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 
 - (void)pasteTransferShelf
 {
-    NSString *source = [gTransferShelfPath copy];
-    if (!source.length || self.readOnly || _backupStorage) return;
-    NSString *destination = [_path stringByAppendingPathComponent:source.lastPathComponent];
+    NSArray<NSString *> *sources = [gTransferShelfPaths copy];
+    if (!sources.count || self.readOnly || _backupStorage) return;
     void (^performCopy)(void) = ^{
-        [self runIO:^BOOL(NSString **error) { return wq_copy_item(source, destination, error); }
-              failure:@"Cannot copy item"];
+        [self runIO:^BOOL(NSString **error) {
+            NSUInteger copied = 0;
+            for (NSString *source in sources) {
+                NSString *destination = [self->_path stringByAppendingPathComponent:source.lastPathComponent];
+                NSString *failure = nil;
+                if ([source isEqualToString:destination] || !wq_copy_item(source, destination, &failure)) {
+                    if (error) *error = [NSString stringWithFormat:@"Copied %lu of %lu items. %@",
+                        (unsigned long)copied, (unsigned long)sources.count,
+                        [source isEqualToString:destination] ? @"An item cannot be copied onto itself." : (failure ?: @"Copy failed.")];
+                    return NO;
+                }
+                copied++;
+            }
+            return YES;
+        } failure:@"Cannot copy all items"];
     };
-    struct stat existing = {0};
-    if (!wq_stat(destination, &existing)) { performCopy(); return; }
-    NSString *message = S_ISDIR(existing.st_mode)
-        ? @"A folder with this name already exists. Its contents will be merged and same-named items replaced safely."
-        : @"A file with this name already exists. Its previous contents will be saved in Backups before replacement.";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Replace existing item?"
-        message:message preferredStyle:UIAlertControllerStyleAlert];
+    BOOL collision = NO;
+    for (NSString *source in sources) {
+        struct stat existing = {0};
+        if (wq_stat([_path stringByAppendingPathComponent:source.lastPathComponent], &existing)) { collision = YES; break; }
+    }
+    if (!collision) { performCopy(); return; }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Replace existing items?"
+        message:@"Same-named files are backed up before replacement. Same-named folders are merged safely."
+        preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *__unused action) { performCopy(); }]];
@@ -1664,6 +1681,8 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)updateFileSelectionBar
 {
     _shareItem.enabled = _selectedFiles.count > 0;
+    _fileCopyItem.enabled = _selectedFiles.count > 0;
+    _fileDeleteItem.enabled = _selectedFiles.count > 0 && !self.readOnly && !_backupStorage;
     _fileAllItem.enabled = _selectedFiles.count < [self selectableFilePaths].count;
     self.title = _selectedFiles.count
         ? [NSString stringWithFormat:@"%lu Selected", (unsigned long)_selectedFiles.count] : @"Select Files";
@@ -1672,7 +1691,7 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)enterFileSelection
 {
     if ([self selectableFilePaths].count == 0) {
-        wq_alert(self, @"No files to select", @"This folder does not contain regular files that can be shared.");
+        wq_alert(self, @"No files to select", @"This folder does not contain regular files that can be shared, copied or deleted.");
         return;
     }
     if (_gridView) [self setGridView:NO];
@@ -1683,12 +1702,24 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     _shareItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                                  style:UIBarButtonItemStyleProminent target:self action:@selector(shareSelectedFiles)];
     _shareItem.accessibilityLabel = @"Share or Save Selected Files";
+    _fileDeleteItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"trash"]
+                                                      style:UIBarButtonItemStylePlain target:self action:@selector(deleteSelectedFiles)];
+    _fileDeleteItem.tintColor = UIColor.systemRedColor;
+    _fileDeleteItem.accessibilityLabel = @"Delete Selected Files";
+    _fileCopyItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"doc.on.doc"]
+                                                    style:UIBarButtonItemStylePlain target:self action:@selector(copySelectedFiles)];
+    _fileCopyItem.accessibilityLabel = @"Copy Selected Files";
     _fileAllItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]
                                                style:UIBarButtonItemStylePlain target:self action:@selector(selectAllFiles)];
     _fileAllItem.accessibilityLabel = @"Select All Files";
     self.refreshControl.enabled = NO;
     self.tableView.allowsMultipleSelection = YES;
-    self.navigationItem.rightBarButtonItems = @[_shareItem, _fileAllItem, _fileDoneItem];
+    self.navigationItem.leftBarButtonItem = _fileAllItem;
+    self.navigationItem.rightBarButtonItems = @[_fileDoneItem];
+    UIBarButtonItem *space = [UIBarButtonItem flexibleSpaceItem];
+    UIBarButtonItem *space2 = [UIBarButtonItem flexibleSpaceItem];
+    self.toolbarItems = @[_shareItem, space, _fileCopyItem, space2, _fileDeleteItem];
+    [self.navigationController setToolbarHidden:NO animated:YES];
     [self updateFileSelectionBar];
     [self.tableView reloadData];
 }
@@ -1701,6 +1732,9 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     self.tableView.allowsMultipleSelection = NO;
     self.refreshControl.enabled = YES;
     self.title = _baseTitle;
+    self.navigationItem.leftBarButtonItem = nil;
+    self.toolbarItems = nil;
+    [self.navigationController setToolbarHidden:YES animated:YES];
     self.navigationItem.rightBarButtonItems = _backupStorage
         ? @[_selectItem, _starItem, _sortItem, _menuItem] : @[_starItem, _sortItem, _menuItem];
     _sortItem.menu = [self sortMenu];
@@ -1727,6 +1761,49 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     if (paths.count == 0) return;
     [self exitFileSelection];
     wq_share_files(self, paths, nil);
+}
+
+- (void)copySelectedFiles
+{
+    NSArray<NSString *> *paths = [_selectedFiles.allObjects sortedArrayUsingSelector:@selector(compare:)];
+    if (!paths.count) return;
+    gTransferShelfPaths = paths;
+    [NSNotificationCenter.defaultCenter postNotificationName:WQTransferShelfDidChangeNotification object:nil];
+    [self exitFileSelection];
+    _scanStatus = [NSString stringWithFormat:@"%lu file%@ ready to paste", (unsigned long)paths.count,
+        paths.count == 1 ? @"" : @"s"];
+    [self updateHeader];
+}
+
+- (void)deleteSelectedFiles
+{
+    NSArray<NSString *> *paths = [_selectedFiles.allObjects sortedArrayUsingSelector:@selector(compare:)];
+    if (paths.count == 0 || self.readOnly || _backupStorage) return;
+    NSString *message = [NSString stringWithFormat:
+        @"Delete %lu selected file%@? A safety copy of every file is kept in Backups before removal.",
+        (unsigned long)paths.count, paths.count == 1 ? @"" : @"s"];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Delete selected files?"
+        message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *__unused action) {
+            [self exitFileSelection];
+            [self runIO:^BOOL(NSString **error) {
+                NSUInteger removed = 0;
+                for (NSString *path in paths) {
+                    NSString *failure = nil;
+                    if (!wq_delete(path, &failure)) {
+                        if (error) *error = [NSString stringWithFormat:
+                            @"Deleted %lu of %lu files. %@", (unsigned long)removed,
+                            (unsigned long)paths.count, failure ?: @"The next file could not be deleted."];
+                        return NO;
+                    }
+                    removed++;
+                }
+                return YES;
+            } failure:@"Could not delete all selected files"];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark Backup multi-selection
@@ -3089,6 +3166,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         @"magnifyingglass": @[@"00111100",@"01100110",@"11000011",@"11000011",@"01100110",@"00111100",@"00011000",@"00001100"],
         @"folder.fill": @[@"00000000",@"01110000",@"11111110",@"11111111",@"11111111",@"11111111",@"01111110",@"00000000"],
         @"doc": @[@"01111000",@"01001100",@"01000110",@"01000010",@"01000010",@"01000010",@"01111110",@"00000000"],
+        @"house.fill": @[@"00011000",@"00111100",@"01111110",@"11111111",@"11111111",@"11011011",@"11011011",@"00000000"],
     };
     NSArray<NSString *> *rows = glyphs[symbol] ?: glyphs[@"doc.plaintext"];
     UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
@@ -3123,29 +3201,32 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return section == 0 ? 3 : 3;
+    return section < 2 ? 3 : 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? @"Interface style" : @"Color appearance";
+    return section == 0 ? @"Interface style" : (section == 1 ? @"Color appearance" : @"Navigation");
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     return section == 0
         ? @"The selected design is applied to the dashboard, file browser, app manager, cache cleaner, editors, search and nested menus."
-        : @"System follows the iPhone setting. Light and Dark keep the selected appearance at all times.";
+        : (section == 1
+            ? @"System follows the iPhone setting. Light and Dark keep the selected appearance at all times."
+            : @"Adds persistent Home, Apps, Starred, Recents and Search tabs. Their matching rows are removed from Home to keep it shorter.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"theme"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"theme"];
+    cell.accessoryView = nil;
     UIListContentConfiguration *content = cell.defaultContentConfiguration;
     if (indexPath.section == 0) {
         NSArray *names = @[@"iPixel Blue", @"iPixel Lime", @"iPixel Pixel"];
@@ -3159,12 +3240,21 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         content.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
         cell.accessoryType = IPSelectedTheme() == values[(NSUInteger)indexPath.row].integerValue
             ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-    } else {
+    } else if (indexPath.section == 1) {
         NSArray *names = @[@"System", @"Light", @"Dark"];
         NSArray *symbols = @[@"circle.lefthalf.filled", @"sun.max.fill", @"moon.stars.fill"];
         content.text = names[(NSUInteger)indexPath.row];
         content.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
         cell.accessoryType = IPSelectedAppearance() == indexPath.row ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    } else {
+        content.text = @"Bottom navigation bar";
+        content.secondaryText = @"Keep common destinations one tap away";
+        content.image = [UIImage systemImageNamed:@"rectangle.bottomthird.inset.filled"];
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = IPBottomNavbarEnabled();
+        [toggle addTarget:self action:@selector(bottomNavbarChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        cell.accessoryType = UITableViewCellAccessoryNone;
     }
     content.textProperties.color = IPPrimaryText();
     content.secondaryTextProperties.color = IPSecondaryText();
@@ -3182,13 +3272,26 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         [NSUserDefaults.standardUserDefaults setInteger:values[(NSUInteger)indexPath.row].integerValue
                                                  forKey:IPThemeStyleDefaultsKey];
     }
-    else
+    else if (indexPath.section == 1)
         [NSUserDefaults.standardUserDefaults setInteger:indexPath.row forKey:IPAppearanceModeDefaultsKey];
+    else {
+        UISwitch *toggle = (UISwitch *)[tableView cellForRowAtIndexPath:indexPath].accessoryView;
+        [toggle setOn:!toggle.isOn animated:YES];
+        [self bottomNavbarChanged:toggle];
+        return;
+    }
     [NSUserDefaults.standardUserDefaults synchronize];
     ip_sync_alternate_icon();
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:IPThemeDidChangeNotification object:nil];
     });
+}
+
+- (void)bottomNavbarChanged:(UISwitch *)sender
+{
+    [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:IPBottomNavbarDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:IPThemeDidChangeNotification object:nil];
 }
 
 @end
@@ -3338,14 +3441,125 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 { return @"Search covers recently visited and starred folder trees that the sandbox escape has already made accessible. Undiscovered container parents cannot be listed globally by iOS."; }
 @end
 
+@interface WQRecentsViewController : UITableViewController
+@end
+
+@implementation WQRecentsViewController {
+    NSArray<NSDictionary<NSString *, NSString *> *> *_folders;
+    NSArray<NSDictionary<NSString *, NSString *> *> *_files;
+    UIBarButtonItem *_clearItem;
+}
+
+- (instancetype)init
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Recents";
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.tableView.backgroundColor = IPBackground();
+    _clearItem = [[UIBarButtonItem alloc] initWithTitle:@"Clear" style:UIBarButtonItemStylePlain
+        target:self action:@selector(confirmClear)];
+    self.navigationItem.rightBarButtonItem = _clearItem;
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh)
+        name:WQRecentsDidChangeNotification object:nil];
+    [self refresh];
+}
+
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)viewWillAppear:(BOOL)animated { [super viewWillAppear:animated]; [self refresh]; }
+
+- (void)refresh
+{
+    _folders = wq_recent_items(YES);
+    _files = wq_recent_items(NO);
+    _clearItem.enabled = _folders.count + _files.count > 0;
+    [self.tableView reloadData];
+}
+
+- (void)confirmClear
+{
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear all recents?"
+        message:@"This removes folder and file history only. It does not delete any files."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive
+        handler:^(UIAlertAction *__unused action) { wq_clear_recents(); }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if (section == 0) return _folders.count ? (NSInteger)_folders.count : (_files.count ? 0 : 1);
+    return (NSInteger)_files.count;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+{ return section == 0 ? @"Recent Folders" : (_files.count ? @"Viewed Files" : nil); }
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"recent"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"recent"];
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    if (!_folders.count && !_files.count) {
+        content.text = @"No recent folders or files";
+        content.secondaryText = @"Items you open will appear here.";
+        content.image = ip_pixel_glyph(@"clock.arrow.circlepath");
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else {
+        NSDictionary *item = indexPath.section == 0 ? _folders[(NSUInteger)indexPath.row] : _files[(NSUInteger)indexPath.row];
+        content.text = item[@"name"];
+        content.secondaryText = item[@"path"];
+        content.secondaryTextProperties.numberOfLines = 2;
+        content.image = ip_pixel_glyph(indexPath.section == 0 ? @"folder.fill" : @"doc");
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    content.textProperties.color = IPPrimaryText();
+    content.secondaryTextProperties.color = IPSecondaryText();
+    content.imageProperties.tintColor = IPAccent();
+    cell.contentConfiguration = content;
+    IPStyleCell(cell);
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (!_folders.count && !_files.count) return;
+    NSDictionary *item = indexPath.section == 0 ? _folders[(NSUInteger)indexPath.row] : _files[(NSUInteger)indexPath.row];
+    if (indexPath.section == 0)
+        [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:item[@"path"] title:item[@"name"]] animated:YES];
+    else wq_open_file(self.navigationController, item[@"path"], NO, WQOpenAuto);
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (!_folders.count && !_files.count) return nil;
+    NSDictionary *item = indexPath.section == 0 ? _folders[(NSUInteger)indexPath.row] : _files[(NSUInteger)indexPath.row];
+    NSString *path = item[@"path"];
+    BOOL folder = indexPath.section == 0;
+    UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+        title:@"Remove" handler:^(UIContextualAction *__unused action, UIView *__unused source, void (^done)(BOOL)) {
+            wq_remove_recent(path, folder); done(YES);
+        }];
+    remove.image = [UIImage systemImageNamed:@"xmark"];
+    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[remove]];
+    configuration.performsFirstActionWithFullSwipe = NO;
+    return configuration;
+}
+@end
+
 @interface WQRootViewController : UITableViewController
 @end
 
 @implementation WQRootViewController {
     NSArray<NSArray<NSString *> *> *_locations;  // title, path, symbol
-    NSArray<NSDictionary<NSString *, NSString *> *> *_recentFolders;
-    NSArray<NSDictionary<NSString *, NSString *> *> *_recentFiles;
-    UIBarButtonItem *_clearRecentsItem;
     CGFloat _dashboardWidth;
 }
 
@@ -3379,19 +3593,13 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         initWithImage:[UIImage systemImageNamed:@"paintpalette.fill"]
         style:UIBarButtonItemStylePlain target:self action:@selector(openAppearanceSettings)];
     appearance.accessibilityLabel = @"Appearance";
-    _clearRecentsItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"clock.badge.xmark"]
-        style:UIBarButtonItemStylePlain target:self action:@selector(confirmClearRecents)];
-    _clearRecentsItem.accessibilityLabel = @"Clear Recents";
-    self.navigationItem.rightBarButtonItems = @[appearance, _clearRecentsItem];
+    self.navigationItem.rightBarButtonItem = appearance;
     self.tableView.backgroundColor = IPBackground();
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 84;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.tableFooterView = [self authorFooter];
     [self rebuildDashboard];
-    [self refreshRecents];
-    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshRecents)
-        name:WQRecentsDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(rebuildDashboard)
         name:UIContentSizeCategoryDidChangeNotification object:nil];
     dispatch_async(wq_io(), ^{
@@ -3409,31 +3617,6 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
             });
         }
     });
-}
-
-- (void)viewWillAppear:(BOOL)animated
-{
-    [super viewWillAppear:animated];
-    [self refreshRecents];
-}
-
-- (void)refreshRecents
-{
-    _recentFolders = wq_recent_items(YES);
-    _recentFiles = wq_recent_items(NO);
-    _clearRecentsItem.enabled = _recentFolders.count + _recentFiles.count > 0;
-    [self.tableView reloadData];
-}
-
-- (void)confirmClearRecents
-{
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear all recents?"
-        message:@"This removes folder and file history only. It does not delete any files."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive
-        handler:^(UIAlertAction *__unused action) { wq_clear_recents(); }]];
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)openAppearanceSettings
@@ -3702,26 +3885,39 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     return footer;
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+- (NSArray<NSArray<NSString *> *> *)toolRows
+{
+    NSMutableArray<NSArray<NSString *> *> *rows = [NSMutableArray new];
+    if (!IPBottomNavbarEnabled()) [rows addObject:@[@"apps", @"Apps", @"square.grid.2x2", @"Browse, back up & manage app data"]];
+    [rows addObject:@[@"cache", @"Cache Cleaner", @"trash", @"Review caches and temporary files"]];
+    [rows addObject:@[@"path", @"Go to Path…", @"arrow.right.circle", @"Jump directly to a folder or file"]];
+    if (!IPBottomNavbarEnabled()) {
+        [rows addObject:@[@"starred", @"Starred", @"star.fill", @"Return to saved folders quickly"]];
+        [rows addObject:@[@"recents", @"Recents", @"clock.arrow.circlepath", @"Recently visited folders and viewed files"]];
+        [rows addObject:@[@"search", @"Global Search", @"magnifyingglass", @"Search accessible visited and saved folders"]];
+    }
+    [rows addObject:@[@"appbackups", @"App Backups", @"clock.arrow.circlepath", @"Restore or share complete app backups"]];
+    [rows addObject:@[@"backups", @"Backups", @"clock.arrow.circlepath", @"Recover overwritten and deleted files"]];
+    [rows addObject:@[@"log", @"Log", @"doc.plaintext", @"Activity, access & diagnostics"]];
+    [rows addObject:@[@"dual", @"Dual Browser", @"rectangle.split.2x1", @"Keep two locations open and copy between containers"]];
+    return rows;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    if (section == 0) return (NSInteger)MIN((NSUInteger)4, _recentFolders.count);
-    if (section == 1) return (NSInteger)MIN((NSUInteger)4, _recentFiles.count);
-    return 9; // Containers are accessible cards in the dashboard header.
+    return (NSInteger)self.toolRows.count;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? (_recentFolders.count ? @"Recent Folders" : nil)
-        : (section == 1 ? (_recentFiles.count ? @"Viewed Files" : nil) : @"Tools");
+    return @"Tools";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return section == 2
-        ? @"Every destructive file action creates a safety copy first."
-        : nil;
+    return @"Every destructive file action creates a safety copy first.";
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section
@@ -3745,27 +3941,10 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"r"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"r"];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
-    if (indexPath.section < 2) {
-        NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
-                                                     : _recentFiles[(NSUInteger)indexPath.row];
-        c.text = item[@"name"];
-        c.secondaryText = item[@"path"];
-        c.secondaryTextProperties.numberOfLines = 2;
-        c.image = ip_pixel_glyph(indexPath.section == 0 ? @"folder.fill" : @"doc");
-    } else {
-        NSArray *tools = @[@[@"Apps", @"square.grid.2x2"], @[@"Cache Cleaner", @"trash"], @[@"Go to Path…", @"arrow.right.circle"],
-                           @[@"Starred", @"star.fill"], @[@"Global Search", @"magnifyingglass"], @[@"App Backups", @"clock.arrow.circlepath"], @[@"Backups", @"clock.arrow.circlepath"], @[@"Log", @"doc.plaintext"],
-                           @[@"Dual Browser", @"rectangle.split.2x1"]];
-        c.text = tools[(NSUInteger)indexPath.row][0];
-        c.image = ip_pixel_glyph(tools[(NSUInteger)indexPath.row][1]);
-    }
-    if (indexPath.section == 2) {
-        NSArray *details = @[@"Browse, back up & manage app data", @"Review caches and temporary files",
-            @"Jump directly to a folder or file", @"Return to saved folders quickly", @"Search across accessible visited and saved folders", @"Restore or share complete app backups",
-            @"Recover overwritten and deleted files", @"Activity, access & diagnostics",
-            @"Keep two locations open and copy between containers"];
-        c.secondaryText = details[(NSUInteger)indexPath.row];
-    }
+    NSArray<NSString *> *tool = self.toolRows[(NSUInteger)indexPath.row];
+    c.text = tool[1];
+    c.secondaryText = tool[3];
+    c.image = ip_pixel_glyph(tool[2]);
     c.textProperties.font = IPTextFont(UIFontTextStyleHeadline);
     c.textProperties.color = IPPrimaryText();
     c.secondaryTextProperties.color = IPSecondaryText();
@@ -3784,51 +3963,32 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     UIViewController *next = nil;
-    if (indexPath.section < 2) {
-        NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
-                                                     : _recentFiles[(NSUInteger)indexPath.row];
-        if (indexPath.section == 0) next = [[WQDirViewController alloc] initWithPath:item[@"path"] title:item[@"name"]];
-        else { wq_open_file(self.navigationController, item[@"path"], NO, WQOpenAuto); return; }
-    } else if (indexPath.row == 0) {
+    NSString *key = self.toolRows[(NSUInteger)indexPath.row][0];
+    if ([key isEqualToString:@"apps"]) {
         next = [WQAppsViewController new];
-    } else if (indexPath.row == 1) {
+    } else if ([key isEqualToString:@"cache"]) {
         next = [WQCacheCleanerViewController new];
-    } else if (indexPath.row == 2) {
+    } else if ([key isEqualToString:@"path"]) {
         [self goToPath];
         return;
-    } else if (indexPath.row == 3) {
+    } else if ([key isEqualToString:@"starred"]) {
         next = [WQStarredViewController new];
-    } else if (indexPath.row == 4) {
+    } else if ([key isEqualToString:@"recents"]) {
+        next = [WQRecentsViewController new];
+    } else if ([key isEqualToString:@"search"]) {
         next = [WQGlobalSearchViewController new];
-    } else if (indexPath.row == 5) {
+    } else if ([key isEqualToString:@"appbackups"]) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App Backups"];
-    } else if (indexPath.row == 6) {
+    } else if ([key isEqualToString:@"backups"]) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
-    } else if (indexPath.row == 7) {
+    } else if ([key isEqualToString:@"log"]) {
         next = [WQLogViewController new];
-    } else {
+    } else if ([key isEqualToString:@"dual"]) {
         next = [WQDualBrowserViewController new];
     }
-    [self.navigationController pushViewController:next animated:YES];
-}
-
-- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
-    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    if (indexPath.section > 1) return nil;
-    NSDictionary *item = indexPath.section == 0 ? _recentFolders[(NSUInteger)indexPath.row]
-                                                 : _recentFiles[(NSUInteger)indexPath.row];
-    NSString *path = item[@"path"]; BOOL folder = indexPath.section == 0;
-    UIContextualAction *remove = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
-        title:@"Remove" handler:^(UIContextualAction *__unused action, UIView *__unused source, void (^done)(BOOL)) {
-            wq_remove_recent(path, folder); done(YES);
-        }];
-    remove.image = [UIImage systemImageNamed:@"xmark"];
-    UISwipeActionsConfiguration *configuration = [UISwipeActionsConfiguration configurationWithActions:@[remove]];
-    configuration.performsFirstActionWithFullSwipe = NO;
-    return configuration;
+    if (next) [self.navigationController pushViewController:next animated:YES];
 }
 
 - (void)goToPath
@@ -3918,7 +4078,25 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     ip_sync_alternate_icon();
     self.window.overrideUserInterfaceStyle = IPPreferredInterfaceStyle();
     self.window.tintColor = IPAccent();
-    UIViewController *root = [[WQNavigationController alloc] initWithRootViewController:[WQRootViewController new]];
+    UIViewController *root = nil;
+    if (IPBottomNavbarEnabled()) {
+        NSArray<UIViewController *> *screens = @[[WQRootViewController new], [WQAppsViewController new],
+            [WQStarredViewController new], [WQRecentsViewController new], [WQGlobalSearchViewController new]];
+        NSArray<NSString *> *titles = @[@"Home", @"Apps", @"Starred", @"Recents", @"Search"];
+        NSArray<NSString *> *symbols = @[@"house.fill", @"square.grid.2x2", @"star.fill", @"clock.arrow.circlepath", @"magnifyingglass"];
+        NSMutableArray<UIViewController *> *tabs = [NSMutableArray new];
+        for (NSUInteger index = 0; index < screens.count; index++) {
+            WQNavigationController *navigation = [[WQNavigationController alloc] initWithRootViewController:screens[index]];
+            navigation.tabBarItem = [[UITabBarItem alloc] initWithTitle:titles[index]
+                image:ip_pixel_glyph(symbols[index]) selectedImage:nil];
+            [tabs addObject:navigation];
+        }
+        UITabBarController *tabController = [UITabBarController new];
+        tabController.viewControllers = tabs;
+        root = tabController;
+    } else {
+        root = [[WQNavigationController alloc] initWithRootViewController:[WQRootViewController new]];
+    }
     if (!animated || !self.window.rootViewController) {
         self.window.rootViewController = root;
         return;
