@@ -1376,6 +1376,10 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 {
     __weak typeof(self) weakSelf = self;
     NSMutableArray<UIMenuElement *> *items = [NSMutableArray new];
+    UIAction *parent = [UIAction actionWithTitle:@"Parent Folder" image:[UIImage systemImageNamed:@"arrow.up"]
+        identifier:nil handler:^(UIAction *__unused action) { [weakSelf openParentFolder]; }];
+    if ([_path isEqualToString:@"/"]) parent.attributes = UIMenuElementAttributesDisabled;
+    [items addObject:parent];
     UIAction *selectFiles = [UIAction actionWithTitle:@"Select Files" image:[UIImage systemImageNamed:@"checkmark.circle"]
                                             identifier:nil handler:^(UIAction *__unused action) { [weakSelf enterFileSelection]; }];
     if (_selectingFiles || _selectingBackups) selectFiles.attributes = UIMenuElementAttributesDisabled;
@@ -1406,6 +1410,15 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
     [items addObject:[UIAction actionWithTitle:@"Copy Path" image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
                       handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
     return [UIMenu menuWithChildren:items];
+}
+
+- (void)openParentFolder
+{
+    NSString *parent = _path.stringByDeletingLastPathComponent;
+    if (!parent.length) parent = @"/";
+    if ([parent isEqualToString:_path]) return;
+    [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:parent title:parent.lastPathComponent ?: @"/"]
+                                             animated:YES];
 }
 
 - (void)transferShelfDidChange:(NSNotification *)notification
@@ -1508,6 +1521,15 @@ static NSString *const WQFolderGridViewKey = @"WQFolderGridViewV1";
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    UINavigationController *navigation = self.navigationController;
+    BOOL dualRoot = navigation.viewControllers.firstObject == self &&
+        [NSStringFromClass(navigation.parentViewController.class) isEqualToString:@"WQDualBrowserViewController"];
+    if (dualRoot) {
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+            initWithImage:[UIImage systemImageNamed:@"arrow.up"] style:UIBarButtonItemStylePlain
+            target:self action:@selector(openParentFolder)];
+        self.navigationItem.leftBarButtonItem.accessibilityLabel = @"Parent Folder";
+    }
     if (_scanInFlight) return;
     NSTimeInterval age = NSDate.date.timeIntervalSinceReferenceDate - _lastReloadFinished;
     if (_scanNeedsRefresh || _lastReloadFinished <= 0 || age > 2.0) [self reload];
@@ -3018,7 +3040,9 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 // Adds a Home button next to Back on screens two or more levels deep. Editors
 // guard Back, Home and the interactive edge swipe through WQUnsavedEditing.
-@interface WQNavigationController : UINavigationController <UINavigationControllerDelegate, UIGestureRecognizerDelegate>
+@interface WQNavigationController : UINavigationController <UINavigationControllerDelegate, UIGestureRecognizerDelegate> {
+    UIScreenEdgePanGestureRecognizer *_rtlPopGesture;
+}
 @end
 
 @implementation WQNavigationController
@@ -3028,6 +3052,10 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     [super viewDidLoad];
     self.delegate = self;
     self.interactivePopGestureRecognizer.delegate = self;
+    _rtlPopGesture = [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:self action:@selector(handleRTLPop:)];
+    _rtlPopGesture.edges = UIRectEdgeRight;
+    _rtlPopGesture.delegate = self;
+    [self.view addGestureRecognizer:_rtlPopGesture];
 }
 
 - (void)navigationController:(UINavigationController *)nav willShowViewController:(UIViewController *)vc animated:(BOOL)animated
@@ -3048,13 +3076,29 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer
 {
+    if (gestureRecognizer == _rtlPopGesture) return IPArabicEnabled() && self.viewControllers.count > 1;
     if (gestureRecognizer != self.interactivePopGestureRecognizer) return YES;
+    if (IPArabicEnabled()) return NO;
     if (self.viewControllers.count <= 1) return NO;
     UIViewController<WQUnsavedEditing> *editor = (UIViewController<WQUnsavedEditing> *)self.topViewController;
     if (![editor conformsToProtocol:@protocol(WQUnsavedEditing)] || !editor.wq_needsLeaveConfirmation) return YES;
     __weak typeof(self) weakSelf = self;
     [editor confirmLeaveThen:^{ [weakSelf popViewControllerAnimated:YES]; }];
     return NO;
+}
+
+- (void)handleRTLPop:(UIScreenEdgePanGestureRecognizer *)gesture
+{
+    if (gesture.state != UIGestureRecognizerStateEnded) return;
+    CGFloat translation = [gesture translationInView:self.view].x;
+    CGFloat velocity = [gesture velocityInView:self.view].x;
+    if (translation > -44 && velocity > -480) return;
+    UIViewController<WQUnsavedEditing> *editor = (UIViewController<WQUnsavedEditing> *)self.topViewController;
+    __weak typeof(self) weakSelf = self;
+    void (^pop)(void) = ^{ [weakSelf popViewControllerAnimated:YES]; };
+    if ([editor conformsToProtocol:@protocol(WQUnsavedEditing)] && editor.wq_needsLeaveConfirmation)
+        [editor confirmLeaveThen:pop];
+    else pop();
 }
 
 - (void)goHome
@@ -3133,16 +3177,99 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 @end
 
+static NSArray<NSDictionary<NSString *, NSString *> *> *ip_app_icon_choices(void)
+{
+    return @[
+        @{@"id": @"auto", @"title": @"Automatic", @"detail": @"Matches Blue and Lime themes"},
+        @{@"id": @"default", @"title": @"Blue", @"asset": @"AppIcon60x60"},
+        @{@"id": @"lime", @"title": @"Lime", @"asset": @"AppIconLime60x60", @"alternate": @"LimeIcon"},
+        @{@"id": @"purple", @"title": @"Purple", @"asset": @"AppIconPurple60x60", @"alternate": @"PurpleIcon"},
+        @{@"id": @"pink", @"title": @"Pink", @"asset": @"AppIconPink60x60", @"alternate": @"PinkIcon"},
+        @{@"id": @"red", @"title": @"Red", @"asset": @"AppIconRed60x60", @"alternate": @"RedIcon"},
+        @{@"id": @"orange", @"title": @"Orange", @"asset": @"AppIconOrange60x60", @"alternate": @"OrangeIcon"},
+        @{@"id": @"gold", @"title": @"Gold", @"asset": @"AppIconGold60x60", @"alternate": @"GoldIcon"},
+        @{@"id": @"teal", @"title": @"Teal", @"asset": @"AppIconTeal60x60", @"alternate": @"TealIcon"},
+        @{@"id": @"mono", @"title": @"Monochrome", @"asset": @"AppIconMono60x60", @"alternate": @"MonoIcon"},
+    ];
+}
+
+static NSString *ip_selected_icon_choice(void)
+{
+    NSString *choice = [NSUserDefaults.standardUserDefaults stringForKey:IPAppIconChoiceDefaultsKey];
+    return choice.length ? choice : @"auto";
+}
+
+static NSDictionary<NSString *, NSString *> *ip_icon_choice(NSString *identifier)
+{
+    for (NSDictionary *choice in ip_app_icon_choices())
+        if ([choice[@"id"] isEqualToString:identifier]) return choice;
+    return ip_app_icon_choices().firstObject;
+}
+
 static void ip_sync_alternate_icon(void)
 {
     UIApplication *application = UIApplication.sharedApplication;
     if (!application.supportsAlternateIcons) return;
-    NSString *wanted = IPSelectedTheme() == IPThemeStyleLime ? @"LimeIcon" : nil;
+    NSString *choice = ip_selected_icon_choice();
+    NSString *wanted = nil;
+    if ([choice isEqualToString:@"auto"]) {
+        wanted = IPSelectedTheme() == IPThemeStyleLime ? @"LimeIcon" : nil;
+    } else if (![choice isEqualToString:@"default"]) {
+        wanted = ip_icon_choice(choice)[@"alternate"];
+    }
     NSString *current = application.alternateIconName;
     if ((wanted == nil && current == nil) || [wanted isEqualToString:current]) return;
     [application setAlternateIconName:wanted completionHandler:^(NSError *error) {
         if (error) NSLog(@"Could not update themed app icon: %@", error.localizedDescription);
     }];
+}
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *ip_tab_catalog(void)
+{
+    return @[
+        @{@"id": @"home", @"title": @"Home", @"symbol": @"house.fill", @"detail": @"Dashboard and storage overview"},
+        @{@"id": @"apps", @"title": @"Apps", @"symbol": @"square.grid.2x2", @"detail": @"Browse and manage app data"},
+        @{@"id": @"starred", @"title": @"Starred", @"symbol": @"star.fill", @"detail": @"Saved folders"},
+        @{@"id": @"recents", @"title": @"Recents", @"symbol": @"clock.arrow.circlepath", @"detail": @"Visited folders and files"},
+        @{@"id": @"cache", @"title": @"Cache Cleaner", @"symbol": @"trash", @"detail": @"Caches and temporary files"},
+        @{@"id": @"path", @"title": @"Go to Path", @"symbol": @"arrow.right.circle", @"detail": @"Open an absolute path"},
+        @{@"id": @"appbackups", @"title": @"App Backups", @"symbol": @"externaldrive.fill.badge.timemachine", @"detail": @"Complete app-data backups"},
+        @{@"id": @"backups", @"title": @"Backups", @"symbol": @"clock.arrow.circlepath", @"detail": @"Safety copies and recovery"},
+        @{@"id": @"log", @"title": @"Log", @"symbol": @"doc.plaintext", @"detail": @"Activity and diagnostics"},
+        @{@"id": @"dual", @"title": @"Dual Browser", @"symbol": @"rectangle.split.2x1", @"detail": @"Two folders side by side"},
+        @{@"id": @"search", @"title": @"Search", @"symbol": @"magnifyingglass", @"detail": @"Global accessible-file search"},
+    ];
+}
+
+static NSDictionary<NSString *, NSString *> *ip_tab_definition(NSString *identifier)
+{
+    for (NSDictionary *definition in ip_tab_catalog())
+        if ([definition[@"id"] isEqualToString:identifier]) return definition;
+    return nil;
+}
+
+static NSArray<NSString *> *ip_active_tab_identifiers(void)
+{
+    NSArray *stored = [NSUserDefaults.standardUserDefaults arrayForKey:IPActiveTabsDefaultsKey];
+    if (![stored isKindOfClass:NSArray.class]) stored = @[@"home", @"apps", @"starred", @"recents", @"search"];
+    NSMutableArray<NSString *> *valid = [NSMutableArray new];
+    for (id value in stored) {
+        if (![value isKindOfClass:NSString.class] || !ip_tab_definition(value) || [valid containsObject:value]) continue;
+        [valid addObject:value];
+    }
+    if (!valid.count) [valid addObject:@"home"];
+    if ([valid containsObject:@"search"]) {
+        [valid removeObject:@"search"];
+        [valid addObject:@"search"]; // Search is deliberately the separate trailing control.
+    }
+    return valid;
+}
+
+static void ip_save_active_tabs(NSArray<NSString *> *identifiers)
+{
+    [NSUserDefaults.standardUserDefaults setObject:identifiers forKey:IPActiveTabsDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [NSNotificationCenter.defaultCenter postNotificationName:IPTabConfigurationDidChangeNotification object:nil];
 }
 
 // Eight-by-eight glyphs keep dashboard/tool symbols genuinely pixel drawn in
@@ -3184,6 +3311,146 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
+@interface IPTabBarSettingsViewController : UITableViewController
+@end
+
+@implementation IPTabBarSettingsViewController {
+    NSMutableArray<NSString *> *_active;
+    NSMutableArray<NSString *> *_inactive;
+}
+
+- (instancetype)init
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Tab Bar";
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    self.tableView.backgroundColor = IPBackground();
+    self.tableView.sectionHeaderTopPadding = 18;
+    [self reloadConfiguration];
+    [self.tableView setEditing:YES animated:NO];
+}
+
+- (void)reloadConfiguration
+{
+    _active = ip_active_tab_identifiers().mutableCopy;
+    NSSet *activeSet = [NSSet setWithArray:_active];
+    _inactive = [NSMutableArray new];
+    for (NSDictionary *definition in ip_tab_catalog())
+        if (![activeSet containsObject:definition[@"id"]]) [_inactive addObject:definition[@"id"]];
+    [self.tableView reloadData];
+}
+
+- (void)commitLiveChange
+{
+    if ([_active containsObject:@"search"]) {
+        [_active removeObject:@"search"];
+        [_active addObject:@"search"];
+    }
+    ip_save_active_tabs(_active.copy);
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf reloadConfiguration];
+        [weakSelf.tableView setEditing:YES animated:NO];
+    });
+}
+
+- (void)commitReorderWithoutReload
+{
+    if ([_active containsObject:@"search"]) {
+        [_active removeObject:@"search"];
+        [_active addObject:@"search"];
+    }
+    ip_save_active_tabs(_active.copy);
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return section == 0 ? (NSInteger)_active.count : (NSInteger)_inactive.count;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+{
+    return section == 0 ? @"Active tabs" : @"Inactive tabs";
+}
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+{
+    return section == 0
+        ? @"Drag active tabs into your preferred order. Changes appear in the tab bar immediately. Search stays in the separate trailing button."
+        : @"Tap + to add any destination. Removing a tab never deletes its files or settings.";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"tab"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"tab"];
+    NSString *identifier = indexPath.section == 0 ? _active[(NSUInteger)indexPath.row] : _inactive[(NSUInteger)indexPath.row];
+    NSDictionary *definition = ip_tab_definition(identifier);
+    UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    content.text = definition[@"title"];
+    content.secondaryText = definition[@"detail"];
+    content.image = ip_pixel_glyph(definition[@"symbol"]);
+    content.textProperties.color = IPPrimaryText();
+    content.secondaryTextProperties.color = IPSecondaryText();
+    content.imageProperties.tintColor = IPAccent();
+    content.imageProperties.maximumSize = CGSizeMake(25, 25);
+    cell.contentConfiguration = content;
+    cell.showsReorderControl = indexPath.section == 0 && ![identifier isEqualToString:@"search"];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    IPStyleCell(cell);
+    return cell;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath { return YES; }
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    return indexPath.section == 0 ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleInsert;
+}
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath { return YES; }
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    return indexPath.section == 0 && ![_active[(NSUInteger)indexPath.row] isEqualToString:@"search"];
+}
+- (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)source
+       toProposedIndexPath:(NSIndexPath *)proposed
+{
+    NSInteger maximum = (NSInteger)_active.count - ([_active containsObject:@"search"] ? 2 : 1);
+    return [NSIndexPath indexPathForRow:MAX(0, MIN(proposed.row, maximum)) inSection:0];
+}
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination
+{
+    NSString *identifier = _active[(NSUInteger)source.row];
+    [_active removeObjectAtIndex:(NSUInteger)source.row];
+    [_active insertObject:identifier atIndex:(NSUInteger)MIN(destination.row, (NSInteger)_active.count)];
+    // UIKit has already moved the visible row. Reloading here races its drag
+    // completion animation and can temporarily place row zero under the
+    // section header. Persist and update the real tab bar without a reload.
+    [self commitReorderWithoutReload];
+}
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style
+ forRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (style == UITableViewCellEditingStyleDelete) {
+        if (_active.count == 1) {
+            wq_alert(self, @"Keep one tab", @"Add another destination before removing the final active tab.");
+            return;
+        }
+        [_active removeObjectAtIndex:(NSUInteger)indexPath.row];
+    } else if (style == UITableViewCellEditingStyleInsert) {
+        NSString *identifier = _inactive[(NSUInteger)indexPath.row];
+        NSUInteger insertion = [_active indexOfObject:@"search"];
+        if (insertion == NSNotFound) insertion = _active.count;
+        [_active insertObject:identifier atIndex:insertion];
+    }
+    [self commitLiveChange];
+}
+
+@end
+
 @interface IPAppearanceSettingsViewController : UITableViewController
 @end
 
@@ -3191,7 +3458,7 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (instancetype)init
 {
-    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Appearance";
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) self.title = @"Settings";
     return self;
 }
 
@@ -3205,21 +3472,37 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return section < 2 ? 3 : 1;
+    return section == 0 ? 1 : (section == 1 ? 3 : 2);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? @"Interface style" : (section == 1 ? @"Color appearance" : @"Navigation");
+    return section == 0 ? @"Language" : (section == 1 ? @"Design" : @"Navigation");
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return section == 0
-        ? @"The selected design is applied to the dashboard, file browser, app manager, cache cleaner, editors, search and nested menus."
-        : (section == 1
-            ? @"System follows the iPhone setting. Light and Dark keep the selected appearance at all times."
-            : @"Adds persistent Home, Apps, Starred, Recents and Search tabs. Their matching rows are removed from Home to keep it shorter.");
+    if (section == 0) return @"Changing the language also changes the reading direction.";
+    if (section == 1) return @"Theme, light or dark appearance, and Home Screen icon.";
+    return @"Choose which destinations stay available in the bottom bar.";
+}
+
+- (UIButton *)menuButtonWithTitle:(NSString *)title menu:(UIMenu *)menu
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:title forState:UIControlStateNormal];
+    button.showsMenuAsPrimaryAction = YES;
+    button.changesSelectionAsPrimaryAction = NO;
+    button.menu = menu;
+    [button sizeToFit];
+    return button;
+}
+
+- (void)refreshAppForSettingsChange
+{
+    [NSUserDefaults.standardUserDefaults synchronize];
+    ip_sync_alternate_icon();
+    [NSNotificationCenter.defaultCenter postNotificationName:IPThemeDidChangeNotification object:nil];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -3227,26 +3510,105 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"theme"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"theme"];
     cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
     UIListContentConfiguration *content = cell.defaultContentConfiguration;
+    content.secondaryText = nil;
+    content.imageProperties.cornerRadius = 0;
+    content.imageProperties.maximumSize = CGSizeMake(28, 28);
     if (indexPath.section == 0) {
-        NSArray *names = @[@"iPixel Blue", @"iPixel Lime", @"iPixel Pixel"];
-        NSArray *details = @[@"Clean navy, electric blue and ice surfaces",
-                             @"Charcoal, lime and soft utility cards",
-                             @"Crisp pixel edges, retro color and monospaced type"];
-        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime), @(IPThemeStylePixel)];
-        content.text = names[(NSUInteger)indexPath.row];
-        content.secondaryText = details[(NSUInteger)indexPath.row];
-        NSArray *symbols = @[@"folder.fill", @"sparkles", @"square.grid.3x3.fill"];
-        content.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
-        cell.accessoryType = IPSelectedTheme() == values[(NSUInteger)indexPath.row].integerValue
-            ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        content.text = @"Language";
+        content.secondaryText = @"Choose English or Arabic";
+        content.image = [UIImage systemImageNamed:@"globe"];
+        NSString *stored = [NSUserDefaults.standardUserDefaults stringForKey:IPLanguageDefaultsKey] ?: @"system";
+        NSMutableArray *actions = [NSMutableArray new];
+        __weak typeof(self) weakSelf = self;
+        for (NSDictionary *choice in @[@{@"id": @"system", @"title": @"System Language"},
+                                        @{@"id": @"en", @"title": @"English"},
+                                        @{@"id": @"ar", @"title": @"العربية"}]) {
+            UIAction *action = [UIAction actionWithTitle:IPLocalizedString(choice[@"title"])
+                image:[choice[@"id"] isEqualToString:@"ar"] ? [UIImage systemImageNamed:@"textformat.rtl"] : nil
+                identifier:nil handler:^(__kindof UIAction *__unused sender) {
+                    if ([choice[@"id"] isEqualToString:@"system"])
+                        [NSUserDefaults.standardUserDefaults removeObjectForKey:IPLanguageDefaultsKey];
+                    else [NSUserDefaults.standardUserDefaults setObject:choice[@"id"] forKey:IPLanguageDefaultsKey];
+                    // Let UIMenu finish dismissing before rebuilding the app
+                    // with the opposite layout direction. Rebuilding while its
+                    // separate presentation window is alive can mirror text.
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{ [weakSelf refreshAppForSettingsChange]; });
+                }];
+            action.state = [stored isEqualToString:choice[@"id"]] ? UIMenuElementStateOn : UIMenuElementStateOff;
+            [actions addObject:action];
+        }
+        NSString *display = [stored isEqualToString:@"system"] ? IPLanguageDisplayName(@"system") : IPLanguageDisplayName(stored);
+        cell.accessoryView = [self menuButtonWithTitle:display menu:[UIMenu menuWithTitle:IPLocalizedString(@"Language") children:actions]];
     } else if (indexPath.section == 1) {
-        NSArray *names = @[@"System", @"Light", @"Dark"];
-        NSArray *symbols = @[@"circle.lefthalf.filled", @"sun.max.fill", @"moon.stars.fill"];
-        content.text = names[(NSUInteger)indexPath.row];
-        content.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
-        cell.accessoryType = IPSelectedAppearance() == indexPath.row ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-    } else {
+        __weak typeof(self) weakSelf = self;
+        if (indexPath.row == 0) {
+            content.text = @"Theme";
+            content.secondaryText = @"Colors and visual style";
+            content.image = [UIImage systemImageNamed:@"paintpalette.fill"];
+            NSArray *names = @[@"iPixel Blue", @"iPixel Lime", @"iPixel Pixel"];
+            NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime), @(IPThemeStylePixel)];
+            NSMutableArray *actions = [NSMutableArray new];
+            for (NSUInteger index = 0; index < names.count; index++) {
+                UIAction *action = [UIAction actionWithTitle:names[index] image:nil identifier:nil handler:^(__kindof UIAction *__unused sender) {
+                    [NSUserDefaults.standardUserDefaults setInteger:values[index].integerValue forKey:IPThemeStyleDefaultsKey];
+                    [weakSelf refreshAppForSettingsChange];
+                }];
+                action.state = IPSelectedTheme() == values[index].integerValue ? UIMenuElementStateOn : UIMenuElementStateOff;
+                [actions addObject:action];
+            }
+            cell.accessoryView = [self menuButtonWithTitle:names[(NSUInteger)(IPSelectedTheme() == IPThemeStyleLime ? 1 : (IPSelectedTheme() == IPThemeStylePixel ? 2 : 0))]
+                menu:[UIMenu menuWithTitle:IPLocalizedString(@"Theme") children:actions]];
+        } else if (indexPath.row == 1) {
+            content.text = @"Appearance";
+            content.secondaryText = @"Follow the device or choose light or dark";
+            content.image = [UIImage systemImageNamed:@"circle.lefthalf.filled"];
+            NSArray *names = @[@"System", @"Light", @"Dark"];
+            NSArray *symbols = @[@"circle.lefthalf.filled", @"sun.max.fill", @"moon.stars.fill"];
+            NSMutableArray *actions = [NSMutableArray new];
+            for (NSUInteger index = 0; index < names.count; index++) {
+                UIAction *action = [UIAction actionWithTitle:IPLocalizedString(names[index]) image:[UIImage systemImageNamed:symbols[index]]
+                    identifier:nil handler:^(__kindof UIAction *__unused sender) {
+                        [NSUserDefaults.standardUserDefaults setInteger:(NSInteger)index forKey:IPAppearanceModeDefaultsKey];
+                        [weakSelf refreshAppForSettingsChange];
+                    }];
+                action.state = IPSelectedAppearance() == (NSInteger)index ? UIMenuElementStateOn : UIMenuElementStateOff;
+                [actions addObject:action];
+            }
+            cell.accessoryView = [self menuButtonWithTitle:IPLocalizedString(names[(NSUInteger)IPSelectedAppearance()])
+                menu:[UIMenu menuWithTitle:IPLocalizedString(@"Appearance") children:actions]];
+        } else {
+            NSDictionary *selected = ip_icon_choice(ip_selected_icon_choice());
+            NSString *selectedAsset = selected[@"asset"];
+            content.text = @"App Icon";
+            content.secondaryText = @"Choose the Home Screen icon";
+            content.image = selectedAsset.length ? [UIImage imageNamed:selectedAsset] : [UIImage systemImageNamed:@"app.dashed"];
+            content.imageProperties.cornerRadius = 8;
+            content.imageProperties.maximumSize = CGSizeMake(34, 34);
+            NSMutableArray *actions = [NSMutableArray new];
+            for (NSDictionary *choice in ip_app_icon_choices()) {
+                NSString *asset = choice[@"asset"];
+                UIAction *action = [UIAction actionWithTitle:IPLocalizedString(choice[@"title"])
+                    image:asset.length ? [UIImage imageNamed:asset] : [UIImage systemImageNamed:@"wand.and.stars"]
+                    identifier:nil handler:^(__kindof UIAction *__unused sender) {
+                        [NSUserDefaults.standardUserDefaults setObject:choice[@"id"] forKey:IPAppIconChoiceDefaultsKey];
+                        [NSUserDefaults.standardUserDefaults synchronize];
+                        // Alternate-icon requests made during a menu's dismissal
+                        // can be deferred by SpringBoard until the next launch.
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                            dispatch_get_main_queue(), ^{ ip_sync_alternate_icon(); });
+                        [weakSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:2 inSection:1]]
+                                                  withRowAnimation:UITableViewRowAnimationAutomatic];
+                    }];
+                action.state = [choice[@"id"] isEqualToString:ip_selected_icon_choice()] ? UIMenuElementStateOn : UIMenuElementStateOff;
+                [actions addObject:action];
+            }
+            cell.accessoryView = [self menuButtonWithTitle:IPLocalizedString(selected[@"title"])
+                menu:[UIMenu menuWithTitle:IPLocalizedString(@"App Icon") children:actions]];
+        }
+    } else if (indexPath.row == 0) {
         content.text = @"Bottom navigation bar";
         content.secondaryText = @"Keep common destinations one tap away";
         content.image = [UIImage systemImageNamed:@"rectangle.bottomthird.inset.filled"];
@@ -3255,6 +3617,11 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         [toggle addTarget:self action:@selector(bottomNavbarChanged:) forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = toggle;
         cell.accessoryType = UITableViewCellAccessoryNone;
+    } else {
+        content.text = @"Customize tabs";
+        content.secondaryText = @"Add, remove and drag to reorder";
+        content.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
     content.textProperties.color = IPPrimaryText();
     content.secondaryTextProperties.color = IPSecondaryText();
@@ -3267,24 +3634,17 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 0) {
-        NSArray<NSNumber *> *values = @[@(IPThemeStyleBlue), @(IPThemeStyleLime), @(IPThemeStylePixel)];
-        [NSUserDefaults.standardUserDefaults setInteger:values[(NSUInteger)indexPath.row].integerValue
-                                                 forKey:IPThemeStyleDefaultsKey];
-    }
-    else if (indexPath.section == 1)
-        [NSUserDefaults.standardUserDefaults setInteger:indexPath.row forKey:IPAppearanceModeDefaultsKey];
-    else {
+    if (indexPath.section == 2 && indexPath.row == 0) {
         UISwitch *toggle = (UISwitch *)[tableView cellForRowAtIndexPath:indexPath].accessoryView;
         [toggle setOn:!toggle.isOn animated:YES];
         [self bottomNavbarChanged:toggle];
         return;
+    } else if (indexPath.section == 2) {
+        [self.navigationController pushViewController:[IPTabBarSettingsViewController new] animated:YES];
+        return;
+    } else {
+        return;
     }
-    [NSUserDefaults.standardUserDefaults synchronize];
-    ip_sync_alternate_icon();
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [NSNotificationCenter.defaultCenter postNotificationName:IPThemeDidChangeNotification object:nil];
-    });
 }
 
 - (void)bottomNavbarChanged:(UISwitch *)sender
@@ -3561,6 +3921,8 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 @implementation WQRootViewController {
     NSArray<NSArray<NSString *> *> *_locations;  // title, path, symbol
     CGFloat _dashboardWidth;
+    BOOL _toolsExpanded;
+    BOOL _didAnimateDashboard;
 }
 
 - (void)dealloc
@@ -3580,8 +3942,25 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
         ];
         if (wq_system_areas_reachable())
             _locations = [_locations arrayByAddingObject:@[@"System Data", @"/private/var/containers/Data/System", @"cpu"]];
+        id savedToolsState = [NSUserDefaults.standardUserDefaults objectForKey:IPToolsExpandedDefaultsKey];
+        _toolsExpanded = savedToolsState ? [savedToolsState boolValue] : YES;
     }
     return self;
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (_didAnimateDashboard || UIAccessibilityIsReduceMotionEnabled()) return;
+    _didAnimateDashboard = YES;
+    UIView *header = self.tableView.tableHeaderView;
+    header.alpha = 0;
+    header.transform = CGAffineTransformMakeTranslation(0, 12);
+    [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:0.88 initialSpringVelocity:0.25
+        options:UIViewAnimationOptionCurveEaseOut animations:^{
+            header.alpha = 1;
+            header.transform = CGAffineTransformIdentity;
+        } completion:nil];
 }
 
 - (void)viewDidLoad
@@ -3590,9 +3969,9 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
     self.navigationController.navigationBar.prefersLargeTitles = NO;
     self.navigationItem.backButtonTitle = @"Home";
     UIBarButtonItem *appearance = [[UIBarButtonItem alloc]
-        initWithImage:[UIImage systemImageNamed:@"paintpalette.fill"]
+        initWithImage:[UIImage systemImageNamed:@"gearshape.fill"]
         style:UIBarButtonItemStylePlain target:self action:@selector(openAppearanceSettings)];
-    appearance.accessibilityLabel = @"Appearance";
+    appearance.accessibilityLabel = @"Settings";
     self.navigationItem.rightBarButtonItem = appearance;
     self.tableView.backgroundColor = IPBackground();
     self.tableView.rowHeight = UITableViewAutomaticDimension;
@@ -3887,19 +4266,21 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (NSArray<NSArray<NSString *> *> *)toolRows
 {
+    NSArray *allRows = @[
+        @[@"apps", @"Apps", @"square.grid.2x2", @"Browse, back up & manage app data"],
+        @[@"cache", @"Cache Cleaner", @"trash", @"Review caches and temporary files"],
+        @[@"path", @"Go to Path…", @"arrow.right.circle", @"Jump directly to a folder or file"],
+        @[@"starred", @"Starred", @"star.fill", @"Return to saved folders quickly"],
+        @[@"recents", @"Recents", @"clock.arrow.circlepath", @"Recently visited folders and viewed files"],
+        @[@"search", @"Global Search", @"magnifyingglass", @"Search accessible visited and saved folders"],
+        @[@"appbackups", @"App Backups", @"clock.arrow.circlepath", @"Restore or share complete app backups"],
+        @[@"backups", @"Backups", @"clock.arrow.circlepath", @"Recover overwritten and deleted files"],
+        @[@"log", @"Log", @"doc.plaintext", @"Activity, access & diagnostics"],
+        @[@"dual", @"Dual Browser", @"rectangle.split.2x1", @"Keep two locations open and copy between containers"],
+    ];
+    NSSet *tabs = IPBottomNavbarEnabled() ? [NSSet setWithArray:ip_active_tab_identifiers()] : [NSSet set];
     NSMutableArray<NSArray<NSString *> *> *rows = [NSMutableArray new];
-    if (!IPBottomNavbarEnabled()) [rows addObject:@[@"apps", @"Apps", @"square.grid.2x2", @"Browse, back up & manage app data"]];
-    [rows addObject:@[@"cache", @"Cache Cleaner", @"trash", @"Review caches and temporary files"]];
-    [rows addObject:@[@"path", @"Go to Path…", @"arrow.right.circle", @"Jump directly to a folder or file"]];
-    if (!IPBottomNavbarEnabled()) {
-        [rows addObject:@[@"starred", @"Starred", @"star.fill", @"Return to saved folders quickly"]];
-        [rows addObject:@[@"recents", @"Recents", @"clock.arrow.circlepath", @"Recently visited folders and viewed files"]];
-        [rows addObject:@[@"search", @"Global Search", @"magnifyingglass", @"Search accessible visited and saved folders"]];
-    }
-    [rows addObject:@[@"appbackups", @"App Backups", @"clock.arrow.circlepath", @"Restore or share complete app backups"]];
-    [rows addObject:@[@"backups", @"Backups", @"clock.arrow.circlepath", @"Recover overwritten and deleted files"]];
-    [rows addObject:@[@"log", @"Log", @"doc.plaintext", @"Activity, access & diagnostics"]];
-    [rows addObject:@[@"dual", @"Dual Browser", @"rectangle.split.2x1", @"Keep two locations open and copy between containers"]];
+    for (NSArray<NSString *> *row in allRows) if (![tabs containsObject:row[0]]) [rows addObject:row];
     return rows;
 }
 
@@ -3907,25 +4288,71 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return (NSInteger)self.toolRows.count;
+    return _toolsExpanded ? (NSInteger)self.toolRows.count : 0;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
 {
-    return @"Tools";
+    UIView *container = [UIView new];
+    UIButtonConfiguration *configuration = [UIButtonConfiguration plainButtonConfiguration];
+    configuration.title = @"Tools";
+    configuration.image = [UIImage systemImageNamed:_toolsExpanded ? @"chevron.up" : @"chevron.down"];
+    configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+    configuration.imagePadding = 8;
+    configuration.baseForegroundColor = IPSecondaryText();
+    configuration.contentInsets = NSDirectionalEdgeInsetsMake(8, 18, 8, 12);
+    configuration.attributedTitle = [[NSAttributedString alloc] initWithString:@"Tools"
+        attributes:@{NSFontAttributeName: IPPixelUIEnabled() ? IPFont(15, UIFontWeightBold) : IPTextFont(UIFontTextStyleHeadline)}];
+    UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentFill;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityLabel = _toolsExpanded ? @"Hide tools" : @"Show tools";
+    [button addTarget:self action:@selector(toggleTools:) forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:button];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [button.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [button.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [button.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    ]];
+    return container;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section { return 52; }
+
+- (void)toggleTools:(UIButton *)sender
+{
+    NSInteger rowCount = (NSInteger)self.toolRows.count;
+    CGPoint originalOffset = self.tableView.contentOffset;
+    NSMutableArray<NSIndexPath *> *paths = [NSMutableArray new];
+    for (NSInteger row = 0; row < rowCount; row++) [paths addObject:[NSIndexPath indexPathForRow:row inSection:0]];
+    _toolsExpanded = !_toolsExpanded;
+    [NSUserDefaults.standardUserDefaults setBool:_toolsExpanded forKey:IPToolsExpandedDefaultsKey];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    UIButtonConfiguration *configuration = sender.configuration;
+    configuration.image = [UIImage systemImageNamed:_toolsExpanded ? @"chevron.up" : @"chevron.down"];
+    sender.configuration = configuration;
+    sender.accessibilityLabel = _toolsExpanded ? @"Hide tools" : @"Show tools";
+    [self.tableView performBatchUpdates:^{
+        if (self->_toolsExpanded)
+            [self.tableView insertRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationTop];
+        else [self.tableView deleteRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationFade];
+    } completion:^(__unused BOOL finished) {
+        // Reloading the whole section resets an inset-grouped table to the
+        // beginning. Keep the user's viewport anchored around Tools instead.
+        CGFloat maxY = MAX(-self.tableView.adjustedContentInset.top,
+            self.tableView.contentSize.height - self.tableView.bounds.size.height + self.tableView.adjustedContentInset.bottom);
+        CGPoint restored = originalOffset;
+        restored.y = MIN(MAX(restored.y, -self.tableView.adjustedContentInset.top), maxY);
+        [self.tableView setContentOffset:restored animated:NO];
+    }];
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [feedback impactOccurred];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return @"Every destructive file action creates a safety copy first.";
-}
-
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section
-{
-    if (![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
-    UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
-    header.textLabel.font = IPPixelUIEnabled() ? IPFont(15, UIFontWeightBold) : IPTextFont(UIFontTextStyleHeadline);
-    header.textLabel.textColor = IPSecondaryText();
+    return _toolsExpanded ? @"Every destructive file action creates a safety copy first." : nil;
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section
@@ -4030,6 +4457,103 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 @end
 
+@interface IPGoToPathViewController : UIViewController <UITextFieldDelegate>
+@end
+
+@implementation IPGoToPathViewController {
+    UITextField *_pathField;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.title = @"Go to Path";
+    self.view.backgroundColor = IPBackground();
+    UILabel *title = [UILabel new];
+    title.text = @"Open any accessible path";
+    title.font = IPTextFont(UIFontTextStyleTitle2);
+    title.textColor = IPPrimaryText();
+    UILabel *detail = [UILabel new];
+    detail.text = @"Enter an absolute folder or file path.";
+    detail.font = IPTextFont(UIFontTextStyleSubheadline);
+    detail.textColor = IPSecondaryText();
+    detail.numberOfLines = 0;
+    _pathField = [UITextField new];
+    _pathField.borderStyle = UITextBorderStyleRoundedRect;
+    _pathField.placeholder = @"/private/var/…";
+    _pathField.text = UIPasteboard.generalPasteboard.hasStrings && [UIPasteboard.generalPasteboard.string hasPrefix:@"/"]
+        ? UIPasteboard.generalPasteboard.string : @"/private/var/";
+    _pathField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _pathField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _pathField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _pathField.returnKeyType = UIReturnKeyGo;
+    _pathField.delegate = self;
+    UIButton *open = [UIButton buttonWithType:UIButtonTypeSystem];
+    [open setTitle:@"Open Path" forState:UIControlStateNormal];
+    open.titleLabel.font = IPTextFont(UIFontTextStyleHeadline);
+    open.backgroundColor = IPAccent();
+    [open setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    open.layer.cornerRadius = IPCornerRadius(13);
+    [open.heightAnchor constraintEqualToConstant:50].active = YES;
+    [open addTarget:self action:@selector(openPath) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, detail, _pathField, open]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 14;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-24],
+        [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:42],
+    ]];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField { [self openPath]; return NO; }
+
+- (void)openPath
+{
+    NSString *path = _pathField.text.stringByStandardizingPath;
+    if (![path hasPrefix:@"/"]) { wq_alert(self, @"Absolute path required", @"Paths must begin with /."); return; }
+    [_pathField resignFirstResponder];
+    dispatch_async(wq_io(), ^{
+        struct stat st;
+        BOOL exists = wq_stat(path, &st);
+        BOOL isDir = exists && S_ISDIR(st.st_mode);
+        if (exists && S_ISLNK(st.st_mode)) {
+            struct stat target;
+            isDir = stat(path.fileSystemRepresentation, &target) == 0 && S_ISDIR(target.st_mode);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!exists) { wq_alert(self, @"Not found", path); return; }
+            if (!isDir) { wq_open_file(self.navigationController, path, NO, WQOpenAuto); return; }
+            [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:path title:nil] animated:YES];
+        });
+    });
+}
+@end
+
+static UIViewController *ip_screen_for_tab(NSString *identifier)
+{
+    if ([identifier isEqualToString:@"home"]) return [WQRootViewController new];
+    if ([identifier isEqualToString:@"apps"]) return [WQAppsViewController new];
+    if ([identifier isEqualToString:@"starred"]) return [WQStarredViewController new];
+    if ([identifier isEqualToString:@"recents"]) return [WQRecentsViewController new];
+    if ([identifier isEqualToString:@"search"]) return [WQGlobalSearchViewController new];
+    if ([identifier isEqualToString:@"cache"]) return [WQCacheCleanerViewController new];
+    if ([identifier isEqualToString:@"path"]) return [IPGoToPathViewController new];
+    if ([identifier isEqualToString:@"appbackups"]) {
+        [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
+        return [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:@"App Backups"];
+    }
+    if ([identifier isEqualToString:@"backups"]) {
+        [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
+        return [[WQDirViewController alloc] initWithPath:wq_backup_root() title:@"Backups"];
+    }
+    if ([identifier isEqualToString:@"log"]) return [WQLogViewController new];
+    if ([identifier isEqualToString:@"dual"]) return [WQDualBrowserViewController new];
+    return [WQRootViewController new];
+}
+
 #pragma mark - App
 
 @interface IPSplashViewController : UIViewController
@@ -4072,27 +4596,71 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 @implementation WQSceneDelegate
 
+- (void)configureTabs:(UITabBarController *)tabController animated:(BOOL)animated
+{
+    NSMutableArray<UITab *> *tabs = [NSMutableArray new];
+    UISearchTab *configuredSearch = nil;
+    UISearchTab *existingSearch = nil;
+    for (UITab *tab in tabController.tabs)
+        if ([tab isKindOfClass:UISearchTab.class]) { existingSearch = (UISearchTab *)tab; break; }
+    for (NSString *identifier in ip_active_tab_identifiers()) {
+        NSDictionary *definition = ip_tab_definition(identifier);
+        if ([identifier isEqualToString:@"search"]) {
+            UISearchTab *search = existingSearch;
+            if (!search) {
+                search = [[UISearchTab alloc] initWithViewControllerProvider:^UIViewController *(__kindof UITab *__unused tab) {
+                    return [[WQNavigationController alloc] initWithRootViewController:ip_screen_for_tab(@"search")];
+                }];
+            }
+            search.automaticallyActivatesSearch = YES;
+            configuredSearch = search;
+            [tabs addObject:search];
+            continue;
+        }
+        UITab *tab = [tabController tabForIdentifier:identifier];
+        if (!tab) {
+            NSString *capturedIdentifier = identifier.copy;
+            tab = [[UITab alloc] initWithTitle:definition[@"title"]
+                image:ip_pixel_glyph(definition[@"symbol"])
+                identifier:capturedIdentifier
+                viewControllerProvider:^UIViewController *(__kindof UITab *__unused suppliedTab) {
+                    return [[WQNavigationController alloc] initWithRootViewController:ip_screen_for_tab(capturedIdentifier)];
+                }];
+        }
+        tab.title = definition[@"title"];
+        tab.image = ip_pixel_glyph(definition[@"symbol"]);
+        tab.preferredPlacement = UITabPlacementMovable;
+        [tabs addObject:tab];
+    }
+    // A compactTabIdentifiers filter that contains only ordinary tab IDs also
+    // filters out UISearchTab. Leave it nil so the system can reserve Search's
+    // separate trailing control.
+    tabController.compactTabIdentifiers = nil;
+    tabController.customizationIdentifier = @"app.ipixel.files.main-tabs";
+    [tabController setTabs:tabs animated:animated];
+    tabController.tabBar.itemPositioning = UITabBarItemPositioningFill;
+    tabController.tabBar.itemSpacing = 0;
+    if (@available(iOS 27.0, *))
+        tabController.prominentTabIdentifier = configuredSearch.identifier;
+    for (UITab *tab in tabs) {
+        UIViewController *controller = tab.viewController;
+        if (![controller isKindOfClass:UINavigationController.class]) continue;
+        UIViewController *first = ((UINavigationController *)controller).viewControllers.firstObject;
+        if ([first isKindOfClass:WQRootViewController.class]) [((WQRootViewController *)first).tableView reloadData];
+    }
+}
+
 - (void)installRootAnimated:(BOOL)animated
 {
     IPInstallAppearance();
+    IPApplyLanguageDirection(self.window);
     ip_sync_alternate_icon();
     self.window.overrideUserInterfaceStyle = IPPreferredInterfaceStyle();
     self.window.tintColor = IPAccent();
     UIViewController *root = nil;
     if (IPBottomNavbarEnabled()) {
-        NSArray<UIViewController *> *screens = @[[WQRootViewController new], [WQAppsViewController new],
-            [WQStarredViewController new], [WQRecentsViewController new], [WQGlobalSearchViewController new]];
-        NSArray<NSString *> *titles = @[@"Home", @"Apps", @"Starred", @"Recents", @"Search"];
-        NSArray<NSString *> *symbols = @[@"house.fill", @"square.grid.2x2", @"star.fill", @"clock.arrow.circlepath", @"magnifyingglass"];
-        NSMutableArray<UIViewController *> *tabs = [NSMutableArray new];
-        for (NSUInteger index = 0; index < screens.count; index++) {
-            WQNavigationController *navigation = [[WQNavigationController alloc] initWithRootViewController:screens[index]];
-            navigation.tabBarItem = [[UITabBarItem alloc] initWithTitle:titles[index]
-                image:ip_pixel_glyph(symbols[index]) selectedImage:nil];
-            [tabs addObject:navigation];
-        }
         UITabBarController *tabController = [UITabBarController new];
-        tabController.viewControllers = tabs;
+        [self configureTabs:tabController animated:NO];
         root = tabController;
     } else {
         root = [[WQNavigationController alloc] initWithRootViewController:[WQRootViewController new]];
@@ -4107,6 +4675,14 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
                     completion:nil];
 }
 
+- (void)tabConfigurationDidChange:(NSNotification *)notification
+{
+    if (!IPBottomNavbarEnabled()) return;
+    UITabBarController *tabController = [self.window.rootViewController isKindOfClass:UITabBarController.class]
+        ? (UITabBarController *)self.window.rootViewController : nil;
+    if (tabController) [self configureTabs:tabController animated:YES];
+}
+
 - (void)themeDidChange:(NSNotification *)notification
 {
     [self installRootAnimated:YES];
@@ -4114,15 +4690,19 @@ static UIImage *ip_pixel_glyph(NSString *symbol)
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options
 {
+    IPInstallLocalization();
     IPInstallAppearance();
     UIWindow *window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window = window;
+    IPApplyLanguageDirection(window);
     window.overrideUserInterfaceStyle = IPPreferredInterfaceStyle();
     window.tintColor = IPAccent();
     window.rootViewController = [IPSplashViewController new];
     [window makeKeyAndVisible];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange:)
         name:IPThemeDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(tabConfigurationDidChange:)
+        name:IPTabConfigurationDidChangeNotification object:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self installRootAnimated:YES];
     });

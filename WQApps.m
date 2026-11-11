@@ -498,6 +498,16 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     });
 }
 
+static NSString *WQCanonicalLSContainerPath(NSString *path)
+{
+    if (![path isKindOfClass:NSString.class] || !path.length) return nil;
+    NSString *canonical = path.stringByStandardizingPath;
+    // LaunchServices normally stores /var while filesystem discovery reports
+    // the equivalent /private/var spelling.
+    if ([canonical hasPrefix:@"/var/"]) canonical = [@"/private" stringByAppendingString:canonical];
+    return canonical;
+}
+
 - (void)scan
 {
     [_scanCancellation cancel];
@@ -511,18 +521,13 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     WQAppScanWatch(cancellation, 0, 0);
     dispatch_async(wq_io(), ^{
         CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
-        NSArray *containers = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0, cancellation,
-            ^(int64_t done, int64_t total, NSUInteger __unused f) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    self->_status = [NSString stringWithFormat:@"Finding apps… %lld%%", total ? (long long)(done * 100 / total) : 0];
-                    [self.tableView reloadData];
-                });
-            });
-        if (!cancellation.isCancelled && !wq_display_names_loaded()) {
+        // LaunchServices already maps installed app/extension containers to
+        // bundle IDs. Read that small database first, as Filza 27.2.2 and
+        // current WQFiles do, instead of scanning every inode on every device.
+        if (!wq_display_names_loaded()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                self->_status = @"Reading app names…";
+                self->_status = @"Reading installed apps…";
                 [self.tableView reloadData];
             });
             WQAppScanStep(@"reading app names");
@@ -531,6 +536,32 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             wq_log(@"app scan: app names %@ in %.1f s", wq_display_names_loaded() ? @"loaded" : @"not loaded",
                    CFAbsoluteTimeGetCurrent() - namesStarted);
         }
+        NSString *appPrefix = @"/private/var/mobile/Containers/Data/Application/";
+        NSMutableOrderedSet<NSString *> *databaseApps = [NSMutableOrderedSet new];
+        for (NSString *path in wq_ls_container_paths(nil) ?: @[]) {
+            NSString *canonical = WQCanonicalLSContainerPath(path);
+            NSString *uuid = [canonical hasPrefix:appPrefix] ? [canonical substringFromIndex:appPrefix.length] : nil;
+            if (uuid.length == 36 && [[NSUUID alloc] initWithUUIDString:uuid])
+                [databaseApps addObject:canonical];
+        }
+        // A normal installation contains many Apple apps. A tiny non-zero
+        // result means the path layout/filter is incomplete; never replace a
+        // proven scan with that partial list again.
+        BOOL usedDatabase = databaseApps.count >= 20;
+        NSArray *containers = usedDatabase
+            ? [databaseApps.array sortedArrayUsingSelector:@selector(compare:)]
+            : wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0, cancellation,
+                ^(int64_t done, int64_t total, NSUInteger __unused f) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (generation != self->_scanGeneration || cancellation.isCancelled) return;
+                        self->_status = [NSString stringWithFormat:@"Finding apps… %lld%%", total ? (long long)(done * 100 / total) : 0];
+                        [self.tableView reloadData];
+                    });
+                });
+        if (usedDatabase)
+            wq_log(@"app scan: using %lu app containers from LaunchServices", (unsigned long)containers.count);
+        else wq_log(@"app scan: LaunchServices yielded only %lu app containers; using inode scan fallback",
+                    (unsigned long)databaseApps.count);
         if (containers) wq_log(@"app scan: %lu containers found in %.1f s; measuring", (unsigned long)containers.count,
                                CFAbsoluteTimeGetCurrent() - scanStarted);
         if (!containers && !cancellation.isCancelled) wq_log(@"app scan: container enumeration failed; see the preceding enumerate log");
@@ -551,6 +582,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             WQAppScanStep([NSString stringWithFormat:@"getting access to %@ (%lu/%lu)", shortName, (unsigned long)i, (unsigned long)containers.count]);
             BOOL granted = wq_grant(c);
             if (!granted) {
+                // LaunchServices can retain an uninstalled app briefly. Do not
+                // turn stale database rows into alarming access failures.
+                if (usedDatabase) continue;
                 [refused addObject:[NSString stringWithFormat:@"%@ (%@)", c.lastPathComponent,
                                     wq_bundle_id_for_container(c) ?: @"unknown app"]];
             }
@@ -682,10 +716,10 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     }
     c.textProperties.color = IPPrimaryText();
     c.secondaryTextProperties.color = IPSecondaryText();
-    // Always show a recognisable tile. When iOS withholds the real icon or the
-    // bundle identifier, use the container identifier to create a stable
-    // fallback instead of leaving a blank/dashed icon.
-    c.image = wq_app_icon(app.bundleID.length ? app.bundleID : identifier) ?: [UIImage systemImageNamed:@"app.fill"];
+    // Prefer the verified installed icon resolved from UIKit, LaunchServices,
+    // or the app's own bundle. If iOS refuses every icon source, retain a
+    // type-aware tile instead of the empty tinted square used previously.
+    c.image = wq_app_icon(app.bundleID);
     c.imageProperties.maximumSize = CGSizeMake(36, 36);
     cell.contentConfiguration = c;
     IPStyleCell(cell);
@@ -710,6 +744,11 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         if (app.hasAccess) {
             [sheet addAction:[UIAlertAction actionWithTitle:@"Open Data Folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
                 [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:app.container title:app.name] animated:YES];
+            }]];
+        }
+        if (app.bundleID.length) {
+            [sheet addAction:[UIAlertAction actionWithTitle:@"Copy Bundle ID" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+                UIPasteboard.generalPasteboard.string = app.bundleID;
             }]];
         }
         [sheet addAction:[UIAlertAction actionWithTitle:@"Copy Container Path" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
@@ -748,6 +787,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Open Data Folder" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
         [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:app.container title:app.name] animated:YES];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy Bundle ID" style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
+        UIPasteboard.generalPasteboard.string = app.bundleID;
     }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];

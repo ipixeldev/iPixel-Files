@@ -28,6 +28,9 @@ float wq_progress_from_text(NSString *_Nullable text);
 // "iPhone 17 Pro Max (iPhone18,2) · iOS 27.0.1 (24A446)"
 NSString *wq_device_line(void);
 UIImage *_Nullable wq_app_icon(NSString *_Nullable bundleID);
+// Returns only a verified installed-app icon. Unlike wq_app_icon, this never
+// invents a service tile, so app lists cannot misidentify an app.
+UIImage *_Nullable wq_installed_app_icon(NSString *_Nullable bundleID);
 void wq_file_thumbnail(NSString *path, CGSize size,
                        void (^completion)(UIImage *_Nullable image));
 

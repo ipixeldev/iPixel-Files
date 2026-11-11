@@ -12,6 +12,7 @@
 #import "IPTheme.h"
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
+#import <dlfcn.h>
 
 // "iPhone 17 Pro Max (iPhone18,2)\niOS 27.0.1 (24A446)"
 NSString *wq_device_line(void)
@@ -255,6 +256,22 @@ UIView *wq_device_header(CGFloat width)
 + (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt scale:(CGFloat)scale;
 @end
 
+@interface NSObject (WQLSApplicationProxyIcons)
++ (id)applicationProxyForIdentifier:(NSString *)identifier;
+- (id)iconDataForVariant:(NSInteger)variant;
+- (id)iconImageForVariant:(NSInteger)variant;
+- (NSURL *)bundleURL;
+@end
+
+@interface NSObject (WQCoreUICatalogIcons)
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+- (NSArray<NSString *> *)allImageNames;
+- (id)imageWithName:(NSString *)name scaleFactor:(CGFloat)scale;
+- (id)iconImageWithName:(NSString *)name scaleFactor:(CGFloat)scale
+           displayGamut:(NSUInteger)gamut layoutDirection:(NSInteger)direction
+            desiredSize:(CGSize)size;
+@end
+
 // Small grey fingerprint of an icon, to recognise iOS's blank placeholder.
 static NSData *wq_icon_fingerprint(UIImage *img)
 {
@@ -295,21 +312,126 @@ static UIImage *wq_raw_icon(NSString *bundleID)
     return [UIImage _applicationIconImageForBundleIdentifier:bundleID format:2 scale:scale];
 }
 
+static UIImage *wq_proxy_icon(NSString *bundleID)
+{
+    static Class proxyClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        proxyClass = NSClassFromString(@"LSApplicationProxy");
+        if (!proxyClass) {
+            dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_LAZY | RTLD_LOCAL);
+            proxyClass = NSClassFromString(@"LSApplicationProxy");
+        }
+    });
+    if (!proxyClass || ![proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)]) return nil;
+    id proxy = [(id)proxyClass applicationProxyForIdentifier:bundleID];
+    BOOL hasData = [proxy respondsToSelector:@selector(iconDataForVariant:)];
+    BOOL hasImage = [proxy respondsToSelector:@selector(iconImageForVariant:)];
+    if (!hasData && !hasImage) return nil;
+    for (NSNumber *variant in @[@2, @15, @10, @1, @0, @3, @4, @5, @6, @7, @8, @9, @11, @12, @13, @14]) {
+        id value = nil;
+        @try {
+            value = hasData ? [proxy iconDataForVariant:variant.integerValue] : nil;
+            if (!value && hasImage) value = [proxy iconImageForVariant:variant.integerValue];
+        } @catch (__unused NSException *exception) { continue; }
+        UIImage *image = [value isKindOfClass:NSData.class] ? [UIImage imageWithData:value]
+            : ([value isKindOfClass:UIImage.class] ? value : nil);
+        if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
+    }
+    return nil;
+}
+
+static NSString *wq_proxy_bundle_path(NSString *bundleID)
+{
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    if (!proxyClass || ![proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)]) return nil;
+    NSURL *url = nil;
+    @try {
+        id proxy = [(id)proxyClass applicationProxyForIdentifier:bundleID];
+        url = [proxy respondsToSelector:@selector(bundleURL)] ? [proxy bundleURL] : nil;
+    } @catch (__unused NSException *exception) { return nil; }
+    return [url isKindOfClass:NSURL.class] && url.isFileURL ? url.path : nil;
+}
+
+// Keep icon diagnostics useful without flooding Log for hundreds of apps.
+// This follows upstream WQFiles' bounded logging, with extra source details
+// for the proxy and Assets.car routes used by iPixel-Files.
+static void wq_icon_note(NSString *bundleID, NSString *message)
+{
+    static NSUInteger notes;
+    @synchronized (NSNull.null) {
+        if (notes >= 12) return;
+        notes++;
+    }
+    wq_log(@"icon: %@: %@", bundleID, message);
+}
+
 // The real icon for bundleID, or nil when iOS only has its placeholder.
 static UIImage *wq_real_icon(NSString *bundleID)
 {
-    static NSData *placeholder;
+    static NSData *placeholderPNG;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ placeholder = wq_icon_fingerprint(wq_raw_icon(@"cz.kolbi.wqfiles.no-such-app")); });
+    dispatch_once(&once, ^{
+        UIImage *placeholder = wq_raw_icon(@"app.ipixel.files.nonexistent-icon");
+        if (placeholder.CGImage) placeholderPNG = UIImagePNGRepresentation(placeholder);
+    });
     UIImage *raw = wq_raw_icon(bundleID);
-    if (!raw || !raw.CGImage || !wq_icon_has_visible_pixels(raw)) return nil;
-    NSData *fp = wq_icon_fingerprint(raw);
-    if (!placeholder || fp.length != placeholder.length) return raw;
-    // Near-identical to the placeholder (allow small rendering differences).
-    const uint8_t *a = fp.bytes, *b = placeholder.bytes;
-    unsigned long diff = 0;
-    for (NSUInteger i = 0; i < fp.length; i++) diff += (unsigned long)abs((int)a[i] - (int)b[i]);
-    return diff / fp.length < 8 ? nil : raw;
+    if (!raw || !raw.CGImage || !wq_icon_has_visible_pixels(raw)) return wq_proxy_icon(bundleID);
+    // Filza 27.2.2 uses the encoded result of a nonexistent bundle ID as the
+    // authoritative placeholder. Comparing PNG bytes avoids accepting the
+    // blank app tile as a genuine icon or rejecting a similarly coloured icon.
+    NSData *png = UIImagePNGRepresentation(raw);
+    if (placeholderPNG.length && [png isEqualToData:placeholderPNG]) return wq_proxy_icon(bundleID);
+    return [raw imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+}
+
+static UIImage *wq_asset_catalog_icon(NSString *bundlePath, NSArray<NSString *> *declaredNames)
+{
+    NSString *carPath = [bundlePath stringByAppendingPathComponent:@"Assets.car"];
+    struct stat st;
+    if (!wq_stat(carPath, &st) || !S_ISREG(st.st_mode)) return nil;
+    static Class catalogClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dlopen("/System/Library/PrivateFrameworks/CoreUI.framework/CoreUI", RTLD_LAZY | RTLD_LOCAL);
+        catalogClass = NSClassFromString(@"CUICatalog");
+    });
+    if (!catalogClass) return nil;
+    @try {
+        NSError *error = nil;
+        id catalog = [[catalogClass alloc] initWithURL:[NSURL fileURLWithPath:carPath] error:&error];
+        if (!catalog) return nil;
+        NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet orderedSetWithArray:declaredNames ?: @[]];
+        [candidates addObjectsFromArray:@[@"AppIcon", @"AppIcon60x60", @"AppIcon76x76"]];
+        if ([catalog respondsToSelector:@selector(allImageNames)]) {
+            NSUInteger found = 0;
+            for (id value in [catalog allImageNames]) {
+                if (![value isKindOfClass:NSString.class]) continue;
+                NSString *name = value;
+                if ([name.lowercaseString containsString:@"appicon"] || [name.lowercaseString hasPrefix:@"icon"]) {
+                    [candidates addObject:name];
+                    if (++found >= 64) break;
+                }
+            }
+        }
+        for (NSString *name in candidates) {
+            for (NSNumber *scaleValue in @[@3, @2, @1]) {
+                CGFloat scale = scaleValue.doubleValue;
+                id result = [catalog imageWithName:name scaleFactor:scale];
+                UIImage *image = [result isKindOfClass:UIImage.class] ? result : nil;
+                if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
+                if ([catalog respondsToSelector:@selector(iconImageWithName:scaleFactor:displayGamut:layoutDirection:desiredSize:)]) {
+                    result = [catalog iconImageWithName:name scaleFactor:scale displayGamut:0 layoutDirection:0
+                                           desiredSize:CGSizeMake(60, 60)];
+                    image = [result isKindOfClass:UIImage.class] ? result : nil;
+                    if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
+                }
+            }
+        }
+    } @catch (NSException *exception) {
+        wq_log(@"icon: CoreUI could not decode %@: %@", bundlePath.lastPathComponent, exception.reason);
+    }
+    return nil;
 }
 
 // The icon from the app's own bundle, for when iOS only hands out its
@@ -317,12 +439,19 @@ static UIImage *wq_real_icon(NSString *bundleID)
 // icon names from Info.plist and loads the matching PNG files.
 static UIImage *wq_bundle_icon(NSString *bundleID)
 {
-    NSString *path = wq_bundle_path_for_id(bundleID);
-    if (!path.length) return nil;
+    // The LaunchServices store layout does not expose the bundle-path field on
+    // every iOS release. Ask its application proxy by bundle ID as a second,
+    // more direct route to the installed .app.
+    NSString *databasePath = wq_bundle_path_for_id(bundleID);
+    NSString *path = databasePath ?: wq_proxy_bundle_path(bundleID);
+    if (!path.length) { wq_icon_note(bundleID, @"no readable app bundle path"); return nil; }
     NSString *plistPath = [path stringByAppendingPathComponent:@"Info.plist"];
     NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     if (!info && wq_grant(path)) info = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-    if (![info isKindOfClass:NSDictionary.class]) return nil;
+    if (![info isKindOfClass:NSDictionary.class]) {
+        wq_icon_note(bundleID, [NSString stringWithFormat:@"cannot read %@/Info.plist", path.lastPathComponent]);
+        return nil;
+    }
     NSMutableArray<NSString *> *names = [NSMutableArray new];
     for (NSString *key in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
         NSDictionary *primary = [info[key] isKindOfClass:NSDictionary.class] ? info[key][@"CFBundlePrimaryIcon"] : nil;
@@ -340,20 +469,41 @@ static UIImage *wq_bundle_icon(NSString *bundleID)
         NSString *base = name.stringByDeletingPathExtension;
         for (NSString *suffix in @[@"@3x.png", @"@2x.png", @"@2x~ipad.png", @"~ipad.png", @".png"]) {
             UIImage *image = [UIImage imageWithContentsOfFile:[path stringByAppendingPathComponent:[base stringByAppendingString:suffix]]];
-            if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
+            if (image.CGImage && wq_icon_has_visible_pixels(image)) {
+                wq_icon_note(bundleID, [NSString stringWithFormat:@"loaded %@%@", base, suffix]);
+                return image;
+            }
         }
     }
-    return nil;
+    // Some apps still ship a loose icon that is not fully described by the
+    // modern asset-catalog keys. Prefer the largest suitable top-level PNG.
+    NSArray<NSString *> *entries = wq_list(path, NULL);
+    NSArray<NSString *> *loose = [entries sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return a.length < b.length ? NSOrderedDescending : (a.length > b.length ? NSOrderedAscending : NSOrderedSame);
+    }];
+    for (NSString *entry in loose) {
+        NSString *lower = entry.lowercaseString;
+        if (![lower hasSuffix:@".png"] || ![lower containsString:@"icon"]) continue;
+        UIImage *image = [UIImage imageWithContentsOfFile:[path stringByAppendingPathComponent:entry]];
+        if (image.CGImage && wq_icon_has_visible_pixels(image)) return image;
+    }
+    // Most App Store apps keep their icon only in Assets.car. CoreUI is the
+    // system component UIKit itself uses to decode that catalog; call it
+    // defensively and only after the app bundle has an active access token.
+    UIImage *catalog = wq_asset_catalog_icon(path, names);
+    wq_icon_note(bundleID, catalog ? @"loaded icon from Assets.car" : @"bundle readable, but no icon could be decoded");
+    return catalog;
 }
 
 static UIImage *wq_round_icon(UIImage *raw)
 {
     CGFloat s = 40;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
-    return [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
+    UIImage *rounded = [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, s, s) cornerRadius:s * 0.225] addClip];
         [raw drawInRect:CGRectMake(0, 0, s, s)];
     }];
+    return [rounded imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
 }
 
 // Symbol tile for system services and extensions that have no icon at all,
@@ -451,7 +601,7 @@ static UIImage *wq_service_tile(NSString *bundleID)
 // Rounded app icon for a bundle id, cached. Falls back to the closest parent
 // app's icon (extensions: com.foo.app.widget -> com.foo.app), then to a
 // neutral service tile. Nil only without a bundle id.
-UIImage *wq_app_icon(NSString *bundleID)
+UIImage *wq_installed_app_icon(NSString *bundleID)
 {
     if (!bundleID.length) return nil;
     static NSCache *cache;
@@ -459,20 +609,29 @@ UIImage *wq_app_icon(NSString *bundleID)
     dispatch_once(&once, ^{ cache = [NSCache new]; });
     UIImage *cached = [cache objectForKey:bundleID];
     if (cached) return cached;
-    // The bundle fallback reads files and may ask for access: never on the
-    // main thread. Lists warm the cache from their background passes; a
-    // main-thread miss gets the tile without caching it.
+    // Bundle inspection may ask for access, so it stays off the main thread.
+    // LaunchServices and UIKit are still tried on the main thread.
     BOOL background = !NSThread.isMainThread;
-    UIImage *raw = wq_real_icon(bundleID) ?: (background ? wq_bundle_icon(bundleID) : nil);
+    // UIKit's private SpringBoard-icon API is a UI service. Background calls
+    // are more likely to return its generic placeholder, so warm scans inspect
+    // readable bundles only; visible rows resolve the system icon on main.
+    UIImage *raw = background ? wq_bundle_icon(bundleID) : (wq_real_icon(bundleID) ?: wq_bundle_icon(bundleID));
     NSArray *parts = [bundleID componentsSeparatedByString:@"."];
     for (NSInteger n = (NSInteger)parts.count - 1; !raw && n >= 3; n--)
     {
         NSString *parent = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
-        raw = wq_real_icon(parent) ?: (background ? wq_bundle_icon(parent) : nil);
+        raw = background ? wq_bundle_icon(parent) : (wq_real_icon(parent) ?: wq_bundle_icon(parent));
     }
-    UIImage *icon = raw ? wq_round_icon(raw) : wq_service_tile(bundleID);
-    if (raw || background) [cache setObject:icon forKey:bundleID];
+    if (!raw) return nil;
+    UIImage *icon = wq_round_icon(raw);
+    [cache setObject:icon forKey:bundleID];
     return icon;
+}
+
+UIImage *wq_app_icon(NSString *bundleID)
+{
+    if (!bundleID.length) return nil;
+    return wq_installed_app_icon(bundleID) ?: wq_service_tile(bundleID);
 }
 
 static UIImage *wq_decorated_thumbnail(UIImage *source, NSString *path, CGSize size)

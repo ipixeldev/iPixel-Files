@@ -63,9 +63,13 @@ xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/Modul
     -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
     -framework AVFoundation -framework AVKit -framework QuickLookThumbnailing -lsqlite3 -larchive \
     WQCore.m WQAccess.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m \
-    WQArchive.m WQDatabase.m main.m -o "$APP/WQFiles"
+    WQArchive.m WQDatabase.m IPLocalization.m main.m -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*@*.png "$APP/"
+if [[ -f ar.lproj/Localizable.strings ]]; then
+    mkdir -p "$APP/ar.lproj"
+    cp ar.lproj/Localizable.strings "$APP/ar.lproj/Localizable.strings"
+fi
 for font in assets/*.ttf; do
     [[ -e "$font" ]] && cp "$font" "$APP/"
 done

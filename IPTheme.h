@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "IPLocalization.h"
 
 typedef NS_ENUM(NSInteger, IPThemeStyle) {
     IPThemeStyleLime = 0,
@@ -15,7 +16,11 @@ typedef NS_ENUM(NSInteger, IPAppearanceMode) {
 static NSString *const IPThemeStyleDefaultsKey = @"IPThemeStyle";
 static NSString *const IPAppearanceModeDefaultsKey = @"IPAppearanceMode";
 static NSString *const IPBottomNavbarDefaultsKey = @"IPBottomNavbar";
+static NSString *const IPActiveTabsDefaultsKey = @"IPActiveTabsV1";
+static NSString *const IPAppIconChoiceDefaultsKey = @"IPAppIconChoice";
+static NSString *const IPToolsExpandedDefaultsKey = @"IPToolsExpanded";
 static NSString *const IPThemeDidChangeNotification = @"IPThemeDidChangeNotification";
+static NSString *const IPTabConfigurationDidChangeNotification = @"IPTabConfigurationDidChangeNotification";
 
 static inline UIColor *IPColor(unsigned int rgb) {
     return [UIColor colorWithRed:((rgb >> 16) & 255) / 255.0

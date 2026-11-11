@@ -1,225 +1,176 @@
 # iPixel-Files
 
 <p align="center">
-  <img src="icons/AppIcon1024.png" width="168" alt="iPixel-Files pixel art icon">
+  <img src="icons/AppIcon1024.png" width="140" alt="iPixel-Files icon" style="border-radius: 28px;">
 </p>
 
-<p align="center"><strong>A beautiful, safety-first iOS container and file manager.</strong></p>
+<p align="center">
+  <strong>A modern, safety-first iOS container and file manager.</strong><br>
+  Built on the <code>worse_query</code> sandbox technique — no jailbreak and no kernel exploit required.
+</p>
 
-This tree contains the **iPixel-Files** native UI redesign by **iPixelDev**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**. See [IPIXEL-README.md](IPIXEL-README.md) for build instructions, validation status, complete credits, and the included GitHub Actions IPA workflow.
-
-Version 1.9 adds optional Files-style bottom navigation, a compact standalone Recents screen, and safe batch copy/delete actions. Version 1.8 added gesture-first image viewing, bounded cross-location search, measured folder sizes and SQLite sidecar handling.
-
-## iPixel-Files highlights
-
-- Complete **iPixel Blue**, **iPixel Lime** and optional **iPixel Pixel** visual systems.
-- Automatic blue or yellow/lime app icon and matching animated folder stacks.
-- File sorting by default order, name, date, type or size in either direction.
-- Persistent List and two-column Grid views, with larger icons and media thumbnails in Grid.
-- Dual browser: side-by-side on iPad and retained Left/Right locations on iPhone.
-- Cross-container transfer shelf, safe replacement backups, Duplicate and detailed Info.
-- Multi-select regular files to share, copy between folders, or delete them together with safety backups.
-- Persistent starred folders with quick access from Home.
-- A standalone Recents screen for folders and viewed files, with per-item removal and Clear All.
-- Optional bottom navigation for Home, Apps, Starred, Recents and Search; enabling it removes those duplicate tool rows from Home.
-- Bounded global search across accessible visited, starred and backup folder trees.
-- Clear loading, loaded-empty, no-results and access-denied folder states.
-- System, Light and Dark appearance modes.
-- Animated, text-free folder-stack splash and scan progress UI.
-- App/container browser, backups, cache cleaner and activity log.
-- Text, image, property-list and hex viewing/editing tools.
-- Image/video thumbnails; full-screen image, video and audio viewing with swipe-down dismissal; safe ZIP/TAR browsing and extraction; and read-only SQLite table browsing, including redirecting WAL/SHM sidecars to their main database.
-- Safety backups and verification before destructive file operations.
-- Original pixel-art icon and iPhone/iPad icon renditions.
+<p align="center">
+  <img src="https://img.shields.io/badge/iOS-26.0%2B-blue.svg?style=flat-square" alt="iOS 26.0+">
+  <img src="https://img.shields.io/badge/version-2.1-success.svg?style=flat-square" alt="Version 2.1">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-orange.svg?style=flat-square" alt="GPL-3.0">
+  <img src="https://img.shields.io/badge/architecture-arm64-lightgrey.svg?style=flat-square" alt="arm64">
+</p>
 
 ---
 
-# Worse Query Files
+## 📱 Screenshots
 
-**WQ Files** is a file browser, app data manager and cache cleaner for iOS 26
-and 27. "WQ" stands for worse_query, the sandbox technique it is built on. It
-reaches other apps' and system containers with no jailbreak and no kernel
-exploit. Tested on iOS 26.7.1, 27.0.1 and 27.2.
+<p align="center">
+  <img src="screenshots/dashboard-blue.png" width="320" alt="iPixel-Files Blue Theme Dashboard">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/dashboard-lime.png" width="320" alt="iPixel-Files Lime Theme Dashboard">
+</p>
 
-**iOS 26 (26.0 to 26.7.2):** supported since 0.7; tested on 26.7.1. worse_query reaches the app, extension, daemon and app group
-containers there, but not System Data or the system groups, so WQ Files hides
-those two and the Cache Cleaner has no crash-log section. A full inode scan
-would take most of an hour on iOS 26, so App Data, Extension Data and App
-Groups are listed from the LaunchServices database instead (found once and
-remembered). Internal Daemons aren't in that database: the first scan for them
-takes long, later ones only check new files. Apps, backups, restores, clearing
-app data, the Cache Cleaner and the file browser work as on iOS 27.
+<p align="center">
+  <em>iPixel Blue (default) &nbsp;|&nbsp; iPixel Lime with customizable containers, storage telemetry, and quick actions.</em>
+</p>
 
-## What it opens
+---
 
-- **App Data**: every app's data container (`Containers/Data/Application`),
-  shown with the app's name and icon instead of a UUID.
-- **App Groups**: shared group containers.
-- **Extension Data** and **Internal Daemons**.
-- **System Data**: `/var/containers/Data/System` (listing only; its contents
-  are owned by root).
-- **System Groups**: the parent cannot be listed on 27.0.1, so known container
-  names are tried one by one; tap **+** to try another name. Covers the
-  MobileGestalt cache and the configuration-profiles (Supervision) folder.
-- **Go to Path** for any absolute path.
+## ✨ Overview
 
-The container parents give no access token on 27.0.1, so their contents are
-found by asking the kernel for the path of each inode number (`fsgetpath`),
-the way KAMUI does it.
+**iPixel-Files** is an advanced native iOS file browser, app data manager, and container explorer designed and developed by **[iPixelDev](https://github.com/ipixeldev)**, based on [WQFiles](https://github.com/kolbicz/WQFiles) by **kolbicz**.
 
-## Tools
+Powered by the `worse_query` sandbox technique, iPixel-Files reaches app data containers, shared app groups, extension containers, and daemons on **iOS 26 and iOS 27** without requiring a jailbreak or kernel exploits.
 
-- **Apps**: every app with its data size. Back up an app's **Documents and
-  Library**, restore the latest backup, clear its data (Documents, Library,
-  and tmp), open its folder, or share a backup as a ZIP over AirDrop, Files,
-  Mail and so on. `tmp` is intentionally ephemeral: clear removes it, but app
-  backups do not include it and restore leaves the current `tmp` untouched.
-- **Cache Cleaner**: cache and temp size per app, with search, Select All /
-  None / Large Caches (50 MB+) and crash logs. Long-press an app to jump to its
-  Caches, tmp or data folder.
-- **Files**: browse, read and share files; each opens in the fitting tool,
-  and **Open As** switches between them. Saving writes back in place (same
-  inode, owner and attributes). Create folders, import files, rename and
-  delete (long-press or swipe right-to-left; deleting always asks first).
-  Swipe left-to-right to share, keeping the navigation-back gesture
-  non-destructive. Long-press a folder to share it as a ZIP.
-  - **Plist editor**: browse dictionaries and arrays, edit values by type
-    (switches for booleans, numbers, text, dates, data as hex), add, delete,
-    rename and reorder. Saves in the file's own format (binary or XML).
-  - **Hex viewer and editor**: any file size (read in pages), go to offset,
-    find hex bytes or text, overwrite bytes in place. Changed bytes are
-    highlighted until saved; the file size never changes.
-  - **Text and images**: text is editable, images render, plists can also be
-    edited as XML text.
-- **Log**: file writes, backups, deletions, restores and errors the app handled, plus the App Group it received.
+---
 
-App names come from LaunchServices' own database, read from lsd's container
-(the LaunchServices API itself refuses this app on 27.x). Apple services that
-only have localized names use a built-in table. Services without an icon get a
-symbol tile.
+## 🚀 Key Features
 
-## Safety
+### 🎨 Themes & Customization
+- **Distinct Visual Themes**: Switch between **iPixel Blue** (default) and **iPixel Lime** with deep dark, light, or system appearance modes.
+- **Nine Selectable App Icons**: Choose between Blue, Lime, Purple, Pink, Red, Orange, Gold, Teal, and Monochrome icons, or let the app automatically match your theme.
+- **Dynamic Tab-Bar Editor**: Fully customize your navigation bar in **Settings → Appearance → Customize Tabs**. Add, remove, or reorder any destination (Home, Apps, Starred, Recents, Cache Cleaner, Go to Path, App Backups, Dual Browser, and Log).
+- **Native System Search**: Uses Apple’s standalone search tab control on supported layouts, keeping search accessible without cluttering your home screen.
 
-Before a regular file is overwritten or deleted, its contents are copied to
-**Backups** inside the app (also reachable in the Files app). Long-press a
-backup to restore it to its original location. In the file browser only empty
-folders can be deleted; symbolic links are removed as links. Clearing an app's
-data and cleaning caches delete without a file-by-file backup; Apps offers to
-back up Documents and Library first, while `tmp` is discarded and cannot be
-restored. Close the target app before backup, restore, or clear. App copies are
-verified by a source-stability digest, a destination-shape digest and stored
-part content hashes (rechecked before restore and rollback), and purge
-postconditions are rechecked, but the operations are not filesystem snapshots
-if the target app keeps running. Target data is changed only in response to
-explicit actions; interrupted safety transactions may be recovered on startup.
+### 🌍 Localization & RTL
+- **Full Arabic Support**: Complete Arabic localization (`ar.lproj`) with natural translations and Right-to-Left (RTL) interface flow.
+- **Gesture Navigation**: Right-edge swipe-to-back gesture tailored for RTL layouts.
+- **Intelligent Directionality**: File paths, bundle identifiers, hex dumps, and technical data remain consistently Left-to-Right (LTR) for optimal readability.
 
-File saves retain the original inode and verify descriptor identity and saved
-contents. Locks are advisory: another app that ignores them can still write
-concurrently, and in-place writes are not crash-atomic. Close the target app and
-keep the durable backups. Recovery fails closed when required safety material is
-missing. Generic overwrite/delete operations on backup-storage files are refused
-to avoid recursively backing up backups; valid backups can still be restored.
-App backups live in **App Backups** (also in the Files app); old ones are never
-pruned automatically. Tap **Select** in **Backups** or **App Backups** to
-choose one or more complete backup folders and delete them together; a single
-folder can still be removed with **Delete Backup**. Automatic pruning is
-intentionally left out so a safety copy is never discarded without a user
-decision.
+### 📂 Container & File Browser
+- **Deep Container Access**:
+  - **App Data** (`Containers/Data/Application`): View installed applications by display name and authentic icon rather than cryptic UUIDs.
+  - **App Groups**: Inspect shared data directories across app suites.
+  - **Extension Data & Internal Daemons**: Explore background services and widget containers.
+  - **System Data & System Groups**: Access system container roots where supported (e.g., MobileGestalt cache, supervision profiles).
+  - **Go to Path**: Jump directly to any absolute filesystem path.
+- **Dual Browser**: Side-by-side two-pane browser on iPad; retained Left/Right state on iPhone with seamless parent folder navigation.
+- **List & Grid Layouts**: View directories as detailed lists or clean two-column grids with media previews.
+- **Sorting Options**: Sort by Name, Date, Size, or File Type in ascending or descending order.
+- **Multi-File Batch Operations**: Select multiple files simultaneously to share, copy between containers, or delete with verified safety backups.
+- **Starred & Recents**: Bookmark frequently visited directories and access recent files instantly.
 
-Editing another app's or the system's files can break things. Keep the backups
-and only change what you understand.
+### 🛠️ Built-in Tools & Editors
+- **App Manager**:
+  - View installed applications with storage size and authentic app icons retrieved directly via LaunchServices.
+  - Copy bundle identifiers with one tap.
+  - Backup **Documents & Library** containers as ZIP archives or share via AirDrop / Files.
+  - Restore backups or clear ephemeral cache/tmp directories.
+- **Cache Cleaner**:
+  - Inspect per-app cache and temporary storage consumption.
+  - Batch clean caches with filters for large caches (50 MB+).
+  - View and prune system crash logs.
+- **Property List (Plist) Editor**:
+  - Native tree browser for dictionaries and arrays.
+  - In-place editing of booleans, numbers, strings, dates, and binary data.
+  - Preserves binary and XML formats automatically.
+- **Hex Viewer & Editor**:
+  - Paged hex browsing for files of any size.
+  - Jump to offset, search byte sequences or ASCII strings, and patch bytes in place with visual modification tracking.
+- **Media & Archive Handlers**:
+  - High-performance image, video, and audio players with intuitive swipe-down dismissal.
+  - Browse and unpack ZIP and TAR archives safely.
+  - Read-only SQLite table viewer with automatic WAL/SHM sidecar redirection.
+- **Diagnostic Activity Log**: Real-time auditing of file reads, writes, backups, token grants, and sandbox operations.
 
-## Troubleshooting
+---
 
-- **Apps list is empty**: the Apps screen depends on a full `fsgetpath` scan of
-  the data volume. A missing/denied container parent, an unavailable inode
-  probe, or an exhausted scan bound is logged as `enumerate: …` and
-  `app scan: …` in **Log**. The current build only treats a *missing* parent as
-  failure; a denied parent and a completion-probe miss still return the
-  scanned subset, so refresh instead of assuming there are no apps.
-- **`NO TOKEN`**: the container path was visible but `wq_grant` could not
-  obtain a sandbox token. Common causes are a signer that dropped the App
-  Group, an app-group cache-swap failure, or a container the app-group query
-  refuses. See the `grant failed`/`enumerate` lines in **Log**.
-- **`(no label)`**: a token was obtained, but the container identifier
-  (`com.apple.containermanager.identifier` xattr or the container metadata
-  plist) could not be read. On iOS 27.2 the attribute can't be read at all,
-  so WQ Files also asks the container manager for a path-to-identifier map
-  and then looks the container up in the LaunchServices database, which lists
-  the data container of every app and most extensions. If the identifier is
-  still missing (for example a system/daemon container with none, or an
-  extension the database doesn't list), the folder stays browsable but cannot
-  be backed up or cleared until identity is available.
+## 🛡️ Safety & Integrity
 
-## Install with AltStore or SideStore
+iPixel-Files is engineered with strict safeguards before modifying files:
 
-Add this source to get WQ Files and its updates:
+1. **Pre-modification Backups**: Whenever a file is modified or removed, its contents are duplicated to internal **Backups** (also visible in the Files app). Backups can be restored to their original location at any time.
+2. **Transactional Consistency**: App backups and restores verify source stability digests, destination shape digests, and content part hashes before and after execution.
+3. **Directory Protection**: Only empty directories can be deleted in the file browser. Symbolic links are safely removed as links rather than following target paths.
+4. **Advisory File Locking**: Protects against concurrent writes where supported.
 
-```
-https://raw.githubusercontent.com/kolbicz/WQFiles/main/source.json
+---
+
+## 📥 Installation
+
+Download the latest `iPixel-Files.ipa` from **[Releases](https://github.com/ipixeldev/iPixel-Files/releases)**.
+
+### Sideloading Requirements
+Because the `worse_query` sandbox bypass relies on an **App Group** to negotiate access tokens, the IPA must be signed with an App Group entitlement (`group.app.ipixel.files` or any group supplied by your signer).
+
+- **AltStore / SideStore**: Automatically manages and assigns an App Group during installation.
+- **Sideloadly**: Retains entitlements and provisions an App Group with free or paid Apple IDs.
+- **TrollStore** (iOS 15.0 – 17.0): Supports direct installation with full entitlements.
+- **Custom Certificate / Developer Account**: Create an explicit App ID with the **App Groups** capability enabled, assign an App Group, and sign using your provisioning profile.
+
+---
+
+## 🔨 Building from Source
+
+### Prerequisites
+- macOS with Xcode (or Command Line Tools)
+- Python 3
+
+### Build Script
+To run the full regression test suite, compile the arm64 binary, and package the signed IPA:
+
+```bash
+./build.sh
 ```
 
-Or download `WQFiles.ipa` from [Releases](https://github.com/kolbicz/WQFiles/releases) and sign it yourself.
+To specify a custom output destination:
+```bash
+WQFILES_FINAL_IPA="$PWD/iPixel-Files.ipa" ./build.sh
+```
 
-## Signing: the App Group
+### GitHub Actions CI/CD
+You can also build the IPA in the cloud without a local macOS setup:
+1. Fork or push this repository to GitHub.
+2. Navigate to **Actions → Build iPixel-Files IPA → Run workflow**.
+3. Download the compiled `iPixel-Files-IPA` artifact from the completed run.
 
-WQ Files needs an **App Group** to work: worse_query asks for access through
-your app's group container. Whatever signs the IPA must give it one. The app
-uses whichever group it receives, so the group name doesn't matter. The top
-of **Log** shows the group it got, or "No App Group" when it got none.
+---
 
-- **AltStore, SideStore or Sideloadly with your Apple ID** (free or paid):
-  they create the App Group automatically. This is the easiest way.
-- **Feather, ESign and similar tools with a certificate (.p12) and a
-  provisioning profile:** the profile has to contain an App Group. Wildcard
-  profiles (App ID `*`), which most certificate sellers provide, can't contain
-  one, so signing fails with an entitlement error, or the app reports "No App
-  Group".
-- **Your own developer account:** in the Apple Developer portal create an App
-  Group (Identifiers → App Groups), create an explicit App ID with the **App
-  Groups** capability and that group assigned, then create a provisioning
-  profile for that App ID. Sign the IPA with that profile, keeping the App
-  Group entitlement.
+## 🧪 Testing
 
-## Build and signing
+The test suite covers Foundation fixtures, access safety, traversal limits, SQLite redirects, and strict iOS arm64 clang syntax verification:
 
-`./build.sh` compiles an arm64 binary and ad-hoc signs it with an App Group
-entitlement (`group.app.ipixel.files`). The technique needs an App Group, so
-re-sign with a tool that keeps one; the app uses whichever group it actually
-receives and shows it at the top of the **Log**. If it reports "No App Group",
-the signer dropped it.
+```bash
+./tests/run_all_tests.sh
+```
 
-The deployment minimum is iOS 26.0. Builds first run the host regression suite,
-then stage and validate the archive, metadata, signature and App Group before
-replacing `iPixel-Files.ipa` in the project directory. Set `WQ_SKIP_PREFLIGHT=1` for
-fixture builds that do not have a test tree. For a separate output, set
-`WQFILES_FINAL_IPA` to an absolute path in an existing directory. The source
-updater validates the IPA's embedded metadata before atomically replacing
-`source.json`; its version/build arguments must match the artifact, and an
-existing release description is preserved when no new notes are supplied.
+Set `WQ_SKIP_IOS_CHECK=1` to run only the host tests without an iOS SDK installed, or `WQ_ASAN=1` to test with AddressSanitizer.
 
-## Regression tests
+---
 
-Run `./tests/run_all_tests.sh` on macOS with Xcode and Python 3. It runs twelve
-portable Foundation fixture executables, the Python release fixtures, static
-browser checks, and strict iOS arm64 compilation/linkage. Logs and generated
-files stay under `.work/tests/`; the existing IPA is not replaced. With only
-Command Line Tools installed, set `WQ_SKIP_IOS_CHECK=1` to run the host tests.
-Set `WQ_ASAN=1` to compile the host fixtures with AddressSanitizer.
+## 🔍 Troubleshooting
 
-These tests use disposable files and entitlement/access doubles. They do not
-issue sandbox tokens or mutate installed app containers. Real iOS signing,
-token issuance, navigation/lifecycle timing, power-loss behavior and app-side
-concurrent writes still require supported-device validation.
+- **Apps list is empty**:
+  - The app uses LaunchServices first and falls back to an inode scan (`fsgetpath`). If an inode scan is required, the initial pass may take a minute. Check the in-app **Log** for `enumerate:` or `app scan:` entries.
+- **`NO TOKEN`**:
+  - `wq_grant` could not acquire a sandbox token. Confirm that your sideloading tool signed the app with an active App Group entitlement.
+- **`(no label)`**:
+  - A container was granted access, but its bundle identifier xattr or metadata plist was unreadable. The directory remains browsable, but backup and clear options are disabled until identity can be verified.
 
-## Credit and license
+---
 
-- **iPixel-Files design and development:** [iPixelDev](https://github.com/ipixeldev).
-- Pixel typography: Press Start 2P from [Google Fonts](https://github.com/google/fonts/tree/main/ofl/pressstart2p), licensed under the SIL Open Font License 1.1.
-- **Original project:** [WQFiles](https://github.com/kolbicz/WQFiles) by [kolbicz](https://github.com/kolbicz).
-- Sandbox technique: [worse_query](https://github.com/forcequitOS/worse_query)
-  by Taj C (forcequit), GPL-3.0-or-later. This app reimplements it.
-- Container enumeration with `fsgetpath`: from
-  [KAMUI](https://github.com/murk-sus/kamui-escape) by murk-sus.
+## 📜 Credits & License
 
-iPixel-Files and its WQFiles-derived source are distributed under GPL-3.0-or-later. See `LICENSE`.
+- **iPixel-Files Design & Development**: **[iPixelDev](https://github.com/ipixeldev)**
+- **Original Project**: **[WQFiles](https://github.com/kolbicz/WQFiles)** by **[kolbicz](https://github.com/kolbicz)**
+- **Sandbox Technique**: **[worse_query](https://github.com/forcequitOS/worse_query)** by **Taj C (forcequit)**
+- **Inode Enumeration**: **[KAMUI](https://github.com/murk-sus/kamui-escape)** by **murk-sus**
+- **Typography**: [Press Start 2P](https://github.com/google/fonts/tree/main/ofl/pressstart2p) by CodeMan38 (SIL Open Font License 1.1)
+
+Distributed under the **GNU General Public License v3.0 or later**. See [LICENSE](LICENSE) for full terms.

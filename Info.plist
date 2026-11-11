@@ -4,6 +4,11 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>ar</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>iPixel-Files</string>
 	<key>CFBundleExecutable</key>
@@ -12,6 +17,8 @@
 	<dict>
 		<key>CFBundleAlternateIcons</key>
 		<dict>
+			<key>GoldIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconGold40x40</string><string>AppIconGold60x60</string></array></dict>
 			<key>LimeIcon</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
@@ -20,6 +27,18 @@
 					<string>AppIconLime60x60</string>
 				</array>
 			</dict>
+			<key>MonoIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconMono40x40</string><string>AppIconMono60x60</string></array></dict>
+			<key>OrangeIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconOrange40x40</string><string>AppIconOrange60x60</string></array></dict>
+			<key>PinkIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconPink40x40</string><string>AppIconPink60x60</string></array></dict>
+			<key>PurpleIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconPurple40x40</string><string>AppIconPurple60x60</string></array></dict>
+			<key>RedIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconRed40x40</string><string>AppIconRed60x60</string></array></dict>
+			<key>TealIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconTeal40x40</string><string>AppIconTeal60x60</string></array></dict>
 		</dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
@@ -34,6 +53,8 @@
 	<dict>
 		<key>CFBundleAlternateIcons</key>
 		<dict>
+			<key>GoldIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconGold40x40</string><string>AppIconGold60x60</string><string>AppIconGold76x76</string><string>AppIconGold83.5x83.5</string></array></dict>
 			<key>LimeIcon</key>
 			<dict>
 				<key>CFBundleIconFiles</key>
@@ -44,6 +65,18 @@
 					<string>AppIconLime83.5x83.5</string>
 				</array>
 			</dict>
+			<key>MonoIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconMono40x40</string><string>AppIconMono60x60</string><string>AppIconMono76x76</string><string>AppIconMono83.5x83.5</string></array></dict>
+			<key>OrangeIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconOrange40x40</string><string>AppIconOrange60x60</string><string>AppIconOrange76x76</string><string>AppIconOrange83.5x83.5</string></array></dict>
+			<key>PinkIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconPink40x40</string><string>AppIconPink60x60</string><string>AppIconPink76x76</string><string>AppIconPink83.5x83.5</string></array></dict>
+			<key>PurpleIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconPurple40x40</string><string>AppIconPurple60x60</string><string>AppIconPurple76x76</string><string>AppIconPurple83.5x83.5</string></array></dict>
+			<key>RedIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconRed40x40</string><string>AppIconRed60x60</string><string>AppIconRed76x76</string><string>AppIconRed83.5x83.5</string></array></dict>
+			<key>TealIcon</key>
+			<dict><key>CFBundleIconFiles</key><array><string>AppIconTeal40x40</string><string>AppIconTeal60x60</string><string>AppIconTeal76x76</string><string>AppIconTeal83.5x83.5</string></array></dict>
 		</dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
@@ -65,13 +98,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9</string>
+	<string>2.1</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>38</string>
+	<string>40</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
